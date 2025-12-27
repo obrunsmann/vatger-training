@@ -22,9 +22,6 @@ class VatsimOAuthController extends Controller
         $this->vatsimConnect = $vatsimConnect;
     }
 
-    /**
-     * Redirect to VATSIM Connect OAuth
-     */
     public function redirect(): RedirectResponse
     {
         try {
@@ -38,9 +35,6 @@ class VatsimOAuthController extends Controller
         }
     }
 
-    /**
-     * Handle the OAuth callback from VATSIM Connect
-     */
     public function callback(Request $request): RedirectResponse
     {
         try {
@@ -61,7 +55,6 @@ class VatsimOAuthController extends Controller
                 ]);
             }
 
-            // Prevent code reuse
             $cacheKey = 'oauth_code_processed_' . hash('sha256', $code);
             if (Cache::has($cacheKey)) {
                 return redirect()->route('login')->withErrors([
@@ -71,26 +64,13 @@ class VatsimOAuthController extends Controller
             Cache::put($cacheKey, true, 600);
 
             try {
-                // Get access token from VATSIM Connect
                 $tokenData = $this->vatsimConnect->getAccessToken($code, $state);
-                /* Log::info('Access token obtained successfully'); */
-
-                // Get user profile from VATSIM Connect
                 $profile = $this->vatsimConnect->getUserProfile($tokenData['access_token']);
-                /* Log::info('User profile obtained', ['vatsim_id' => $profile['id']]); */
 
-                // Create or update user
                 $user = $this->createOrUpdateUser($profile);
-                /* Log::info('User created/updated', ['user_id' => $user->id]); */
-
-                // Assign roles
                 $this->assignRoles($user, $profile['teams'] ?? []);
-                /* Log::info('Roles assigned'); */
 
-                // Log the user in
-                Auth::login($user, true); // true for remember me
-
-                // Regenerate session for security
+                Auth::login($user, true);
                 $request->session()->regenerate();
 
                 return redirect()->intended(route('dashboard', absolute: false));
@@ -111,9 +91,6 @@ class VatsimOAuthController extends Controller
         }
     }
 
-    /**
-     * Create or update user from VATSIM Connect profile
-     */
     protected function createOrUpdateUser(array $profile): User
     {
         $mentorGroups = ['EDGG Mentor', 'EDMM Mentor', 'EDWW Mentor'];
@@ -133,35 +110,31 @@ class VatsimOAuthController extends Controller
             } catch (\Exception $e) {
                 $lastRatingChange = null;
             }
-        } else {
-            $lastRatingChange = null;
         }
 
-        return User::updateOrCreate(
-            ['vatsim_id' => $profile['id']],
-            [
-                'first_name' => $profile['firstname'],
-                'last_name' => $profile['lastname'],
-                'email' => $profile['email'] ?? null,
-                'rating' => $profile['rating_atc'],
-                'subdivision' => $profile['subdivision_code'] ?? null,
-                'last_rating_change' => $lastRatingChange,
-                'is_staff' => $isStaff,
-                'is_superuser' => $isSuperuser,
-                'email_verified_at' => now(), // Consider email verified from VATSIM
-            ]
-        );
+        $user = User::firstOrNew(['vatsim_id' => $profile['id']]);
+
+        $user->fill([
+            'first_name' => $profile['firstname'],
+            'last_name' => $profile['lastname'],
+            'email' => $profile['email'] ?? null,
+            'rating' => $profile['rating_atc'],
+            'subdivision' => $profile['subdivision_code'] ?? null,
+            'last_rating_change' => $lastRatingChange,
+            'is_staff' => $isStaff,
+            'is_superuser' => $isSuperuser,
+            'email_verified_at' => now(),
+        ]);
+
+        $user->save();
+
+        return $user;
     }
 
-    /**
-     * Assign roles to user based on teams
-     */
     protected function assignRoles(User $user, array $teams): void
     {
-        // Remove all existing roles first
         $user->roles()->detach();
         
-        // Assign roles based on teams
         foreach ($teams as $team) {
             $role = Role::where('name', $team)->first();
             if ($role) {
