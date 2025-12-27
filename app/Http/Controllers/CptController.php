@@ -706,10 +706,12 @@ class CptController extends Controller
             }
 
             if ($uploadResult['success'] && $passed) {
+                $newRating = $cpt->trainee->rating + 1;
+
                 $upgradeResult = $this->vatEudService->requestUpgrade(
                     $cpt->trainee->vatsim_id,
                     config('services.vateud.atd_lead_cid', 1441619),
-                    $cpt->trainee->rating + 1
+                    $newRating
                 );
 
                 if (!$upgradeResult['success']) {
@@ -721,6 +723,12 @@ class CptController extends Controller
                     \Log::info('CPT grading: VatEud upgrade requested', [
                         'cpt_id' => $cpt->id,
                         'trainee_id' => $cpt->trainee->vatsim_id,
+                        'new_rating' => $newRating,
+                    ]);
+
+                    $cpt->trainee->update([
+                        'rating_upgraded_at' => now(),
+                        'last_known_rating' => $cpt->trainee->rating,
                     ]);
                 }
             }

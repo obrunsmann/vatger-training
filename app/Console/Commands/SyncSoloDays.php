@@ -34,11 +34,9 @@ class SyncSoloDays extends Command
 
             $this->info('Found ' . count($soloEndorsements) . ' solo endorsements');
 
-            // Group solos by VATSIM ID to get the max days used per user
             $userSoloDays = collect($soloEndorsements)
                 ->groupBy('user_cid')
                 ->map(function ($userSolos) {
-                    // Get the maximum position_days for this user across all their solos
                     return $userSolos->max('position_days') ?? 0;
                 });
 
@@ -53,9 +51,22 @@ class SyncSoloDays extends Command
                     if ($user) {
                         $currentDays = $user->solo_days_used ?? 0;
                         $newDays = (int) $soloDays;
-                        
-                        // Only update if VatEUD shows more days (never decrease)
-                        if ($newDays > $currentDays) {
+
+                        if ($this->shouldResetSoloDays($user)) {
+                            $this->line("\nResetting solo days for {$user->name} ({$vatsimId}) due to rating upgrade");
+                            $user->solo_days_used = 0;
+                            $user->rating_upgraded_at = null;
+                            $user->save();
+
+                            Log::info('Solo days reset due to rating upgrade', [
+                                'vatsim_id' => $vatsimId,
+                                'user_name' => $user->name,
+                                'old_rating' => $user->last_known_rating,
+                                'new_rating' => $user->rating,
+                            ]);
+                        }
+                        // Only update if VatEUD shows more days
+                        elseif ($newDays > $currentDays) {
                             $user->solo_days_used = $newDays;
                             $user->save();
                             
@@ -91,5 +102,23 @@ class SyncSoloDays extends Command
             ]);
             return 1;
         }
+    }
+
+    protected function shouldResetSoloDays(User $user): bool
+    {
+        if (!$user->rating_upgraded_at) {
+            return false;
+        }
+
+        if ($user->rating === $user->last_known_rating) {
+            return false;
+        }
+
+        // Rating has increased - reset solo days
+        if ($user->rating > $user->last_known_rating) {
+            return true;
+        }
+
+        return false;
     }
 }
