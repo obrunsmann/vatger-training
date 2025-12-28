@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Roles\Schemas;
 use Filament\Schemas\Schema;
 use Filament\Forms;
 use Filament\Schemas\Components\Section;
+use App\Models\Permission;
 
 class RoleForm
 {
@@ -26,25 +27,28 @@ class RoleForm
 
                 Section::make('Permissions')
                     ->schema([
-                        Forms\Components\Select::make('permissions')
+                        Forms\Components\CheckboxList::make('permission_ids')
                             ->label('Role Permissions')
-                            ->relationship('permissions', 'name')
-                            ->multiple()
-                            ->preload()
-                            ->searchable()
                             ->helperText('Permissions granted to all users with this role')
                             ->options(function () {
-                                return \App\Models\Permission::query()
+                                return Permission::query()
                                     ->orderBy('group')
                                     ->orderBy('name')
                                     ->get()
-                                    ->groupBy('group')
-                                    ->flatMap(function ($permissions, $group) {
-                                        return $permissions->pluck('name', 'id')->mapWithKeys(function ($name, $id) use ($group) {
-                                            return [$id => ($group ? "[$group] " : '') . $name];
-                                        });
-                                    })
-                                    ->toArray();
+                                    ->mapWithKeys(function ($permission) {
+                                        $label = $permission->group
+                                            ? "[{$permission->group}] {$permission->name}"
+                                            : $permission->name;
+                                        return [$permission->id => $label];
+                                    });
+                            })
+                            ->columns(2)
+                            ->gridDirection('row')
+                            ->dehydrated(false)
+                            ->afterStateHydrated(function ($component, $state, $record) {
+                                if ($record) {
+                                    $component->state($record->permissions()->pluck('permissions.id')->toArray());
+                                }
                             }),
                     ])->columns(1),
             ]);

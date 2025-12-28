@@ -70,6 +70,10 @@ class CourseResource extends Resource
             return true;
         }
 
+        if ($user->isLeadingMentor()) {
+            return true;
+        }
+
         return $user->canAccessAdminResource('courses');
     }
 
@@ -81,23 +85,30 @@ class CourseResource extends Resource
             return false;
         }
 
-        if ($user->is_superuser || $user->is_admin) {
-            return true;
-        }
-
-        return false;
+        return $user->is_superuser || $user->is_admin;
     }
 
     public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
     {
         $user = Filament::auth()->user();
 
+        if (!$user) {
+            return false;
+        }
+
         if ($user->is_superuser || $user->is_admin) {
             return true;
         }
 
-        if (!$user->canEditAdminResource('courses')) {
-            return false;
+        if ($user->isChiefOfTraining()) {
+            $isCoT = \DB::table('chief_of_trainings')
+                ->where('user_id', $user->id)
+                ->where('course_id', $record->id)
+                ->exists();
+
+            if ($isCoT) {
+                return true;
+            }
         }
 
         if ($user->isLeadingMentor() && $record->mentorGroup) {
@@ -107,18 +118,51 @@ class CourseResource extends Resource
             }
         }
 
-        return false;
+        return $user->canEditAdminResource('courses');
     }
 
     public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
     {
         $user = Filament::auth()->user();
 
+        if (!$user) {
+            return false;
+        }
+
+        return $user->is_superuser || $user->is_admin;
+    }
+
+    public static function canView(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
         if ($user->is_superuser || $user->is_admin) {
             return true;
         }
 
-        return false;
+        if ($user->isChiefOfTraining()) {
+            $isCoT = \DB::table('chief_of_trainings')
+                ->where('user_id', $user->id)
+                ->where('course_id', $record->id)
+                ->exists();
+
+            if ($isCoT) {
+                return true;
+            }
+        }
+
+        if ($user->isLeadingMentor() && $record->mentorGroup) {
+            $fir = $user->getFirFromMentorGroup($record->mentorGroup->name);
+            if ($fir && $user->leadingMentorFirs()->where('fir', $fir)->exists()) {
+                return true;
+            }
+        }
+
+        return $user->canAccessAdminResource('courses');
     }
 
     public static function getEloquentQuery(): Builder
@@ -126,24 +170,48 @@ class CourseResource extends Resource
         $query = parent::getEloquentQuery();
         $user = Filament::auth()->user();
 
+        if (!$user) {
+            return $query->whereRaw('1 = 0');
+        }
+
         if ($user->is_superuser || $user->is_admin) {
             return $query;
         }
 
+        $accessibleCourseIds = [];
+
+        if ($user->isChiefOfTraining()) {
+            $cotCourseIds = \DB::table(table: 'chief_of_trainings')
+                ->where('user_id', $user->id)
+                ->pluck('course_id')
+                ->toArray();
+            $accessibleCourseIds = array_merge($accessibleCourseIds, $cotCourseIds);
+        }
+
         if ($user->isLeadingMentor()) {
             $userFirs = $user->leadingMentorFirs()->pluck('fir')->toArray();
-
+            
             if (!empty($userFirs)) {
-                $query->whereHas('mentorGroup', function ($q) use ($userFirs) {
+                $lmCourseIds = Course::whereHas('mentorGroup', function ($q) use ($userFirs) {
                     $q->where(function ($q2) use ($userFirs) {
                         foreach ($userFirs as $fir) {
                             $q2->orWhere('name', 'LIKE', "%{$fir}%");
                         }
                     });
-                });
+                })->pluck('id')->toArray();
+
+                $accessibleCourseIds = array_merge($accessibleCourseIds, $lmCourseIds);
             }
         }
 
-        return $query;
+        if ($user->canAccessAdminResource('courses')) {
+            return $query;
+        }
+
+        if (empty($accessibleCourseIds)) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereIn('id', array_unique($accessibleCourseIds));
     }
 }

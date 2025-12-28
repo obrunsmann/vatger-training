@@ -215,15 +215,30 @@ class User extends Authenticatable implements FilamentUser
     public function canAccessPanel(Panel $panel): bool
     {
         if ($this->is_superuser || $this->is_admin) {
+            \Log::info("User {$this->id} granted admin access: superuser/admin");
             return true;
         }
 
-        return $this->hasPermission('admin.access');
+        $isLM = $this->isLeadingMentor();
+
+        if ($isLM) {
+            \Log::info("User {$this->id} granted admin access: LM={$isLM}");
+            return true;
+        }
+
+        $hasPermission = $this->hasPermission(permissionName: 'admin.access');
+        \Log::info("User {$this->id} admin access check: hasPermission={$hasPermission}");
+
+        return $hasPermission;
     }
 
     public function canAccessAdminResource(string $resource): bool
     {
         if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($resource === 'courses' && ($this->isLeadingMentor() || $this->isChiefOfTraining())) {
             return true;
         }
 
@@ -234,6 +249,10 @@ class User extends Authenticatable implements FilamentUser
     public function canEditAdminResource(string $resource): bool
     {
         if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($resource === 'courses' && ($this->isLeadingMentor() || $this->isChiefOfTraining())) {
             return true;
         }
 
@@ -288,15 +307,31 @@ class User extends Authenticatable implements FilamentUser
 
     public function hasPermission(string $permissionName): bool
     {
-        if ($this->permissions()->where('name', $permissionName)->exists()) {
+        $hasDirectPermission = \DB::table('user_permissions')
+            ->join('permissions', 'user_permissions.permission_id', '=', 'permissions.id')
+            ->where('user_permissions.user_id', $this->id)
+            ->where('permissions.name', $permissionName)
+            ->exists();
+
+        if ($hasDirectPermission) {
+            \Log::info("User {$this->id} has direct permission: {$permissionName}");
             return true;
         }
 
-        return $this->roles()
-            ->whereHas('permissions', function ($query) use ($permissionName) {
-                $query->where('name', $permissionName);
-            })
+        $hasRolePermission = \DB::table('user_roles')
+            ->join('role_permissions', 'user_roles.role_id', '=', 'role_permissions.role_id')
+            ->join('permissions', 'role_permissions.permission_id', '=', 'permissions.id')
+            ->where('user_roles.user_id', $this->id)
+            ->where('permissions.name', $permissionName)
             ->exists();
+
+        if ($hasRolePermission) {
+            \Log::info("User {$this->id} has role permission: {$permissionName}");
+            return true;
+        }
+
+        \Log::info("User {$this->id} does NOT have permission: {$permissionName}");
+        return false;
     }
 
     private function findCourseByPosition(string $position): ?Course
