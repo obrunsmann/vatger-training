@@ -46,6 +46,10 @@ class User extends Authenticatable implements FilamentUser
         'solo_days_used' => 'integer',
     ];
 
+    private $permissionCache = null;
+    private $cotCourseIdsCache = null;
+    private $lmFirsCache = null;
+
     public function getRouteKeyName()
     {
         return 'vatsim_id';
@@ -78,7 +82,11 @@ class User extends Authenticatable implements FilamentUser
 
     public function hasAnyRole(array $roles): bool
     {
-        return $this->roles()->whereIn('name', $roles)->exists();
+        if (!$this->relationLoaded('roles')) {
+            $this->load('roles');
+        }
+
+        return $this->roles->whereIn('name', $roles)->isNotEmpty();
     }
 
     public function roles()
@@ -215,21 +223,14 @@ class User extends Authenticatable implements FilamentUser
     public function canAccessPanel(Panel $panel): bool
     {
         if ($this->is_superuser || $this->is_admin) {
-            \Log::info("User {$this->id} granted admin access: superuser/admin");
             return true;
         }
 
-        $isLM = $this->isLeadingMentor();
-
-        if ($isLM) {
-            \Log::info("User {$this->id} granted admin access: LM={$isLM}");
+        if ($this->isLeadingMentor()) {
             return true;
         }
 
-        $hasPermission = $this->hasPermission(permissionName: 'admin.access');
-        \Log::info("User {$this->id} admin access check: hasPermission={$hasPermission}");
-
-        return $hasPermission;
+        return $this->hasPermission('admin.access');
     }
 
     public function canAccessAdminResource(string $resource): bool
@@ -238,7 +239,7 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        if ($resource === 'courses' && ($this->isLeadingMentor() || $this->isChiefOfTraining())) {
+        if ($resource === 'courses' && $this->isLeadingMentor()) {
             return true;
         }
 
@@ -252,7 +253,7 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        if ($resource === 'courses' && ($this->isLeadingMentor() || $this->isChiefOfTraining())) {
+        if ($resource === 'courses' && $this->isLeadingMentor()) {
             return true;
         }
 
@@ -305,33 +306,60 @@ class User extends Authenticatable implements FilamentUser
         return $this->hasMany(LeadingMentor::class);
     }
 
+    private function loadPermissionsOnce(): void
+    {
+        if ($this->permissionCache !== null) {
+            return;
+        }
+
+        if (!$this->relationLoaded('permissions')) {
+            $this->load('permissions');
+        }
+        if (!$this->relationLoaded('roles')) {
+            $this->load('roles.permissions');
+        }
+
+        $this->permissionCache = $this->permissions->pluck('name')->merge(
+            $this->roles->flatMap->permissions->pluck('name')
+        )->unique()->values()->all();
+    }
+
     public function hasPermission(string $permissionName): bool
     {
-        $hasDirectPermission = \DB::table('user_permissions')
-            ->join('permissions', 'user_permissions.permission_id', '=', 'permissions.id')
-            ->where('user_permissions.user_id', $this->id)
-            ->where('permissions.name', $permissionName)
-            ->exists();
+        $this->loadPermissionsOnce();
+        return in_array($permissionName, $this->permissionCache);
+    }
 
-        if ($hasDirectPermission) {
-            \Log::info("User {$this->id} has direct permission: {$permissionName}");
-            return true;
+    public function getChiefOfTrainingCourseIds(): array
+    {
+        if ($this->cotCourseIdsCache === null) {
+            $this->cotCourseIdsCache = \DB::table('chief_of_trainings')
+                ->where('user_id', $this->id)
+                ->pluck('course_id')
+                ->all();
         }
+        return $this->cotCourseIdsCache;
+    }
 
-        $hasRolePermission = \DB::table('user_roles')
-            ->join('role_permissions', 'user_roles.role_id', '=', 'role_permissions.role_id')
-            ->join('permissions', 'role_permissions.permission_id', '=', 'permissions.id')
-            ->where('user_roles.user_id', $this->id)
-            ->where('permissions.name', $permissionName)
-            ->exists();
-
-        if ($hasRolePermission) {
-            \Log::info("User {$this->id} has role permission: {$permissionName}");
-            return true;
+    public function getLeadingMentorFirs(): array
+    {
+        if ($this->lmFirsCache === null) {
+            if (!$this->relationLoaded('leadingMentorFirs')) {
+                $this->load('leadingMentorFirs');
+            }
+            $this->lmFirsCache = $this->leadingMentorFirs->pluck('fir')->all();
         }
+        return $this->lmFirsCache;
+    }
 
-        \Log::info("User {$this->id} does NOT have permission: {$permissionName}");
-        return false;
+    public function isChiefOfTrainingForCourse(int $courseId): bool
+    {
+        return in_array($courseId, $this->getChiefOfTrainingCourseIds());
+    }
+
+    public function isLeadingMentorForFir(string $fir): bool
+    {
+        return in_array($fir, $this->getLeadingMentorFirs());
     }
 
     private function findCourseByPosition(string $position): ?Course
@@ -408,43 +436,33 @@ class User extends Authenticatable implements FilamentUser
             return Course::pluck('id')->toArray();
         }
 
-        $cacheKey = "user_{$this->id}_accessible_courses";
+        $courseIds = [];
 
-        return \Cache::remember($cacheKey, now()->addMinutes(5), function () {
-            $courseIds = [];
+        $mentorCourseIds = \DB::table('course_mentors')
+            ->where('user_id', $this->id)
+            ->pluck('course_id')
+            ->toArray();
+        $courseIds = array_merge($courseIds, $mentorCourseIds);
 
-            $mentorCourseIds = \DB::table('course_mentors')
-                ->where('user_id', $this->id)
-                ->pluck('course_id')
+        $cotCourseIds = $this->getChiefOfTrainingCourseIds();
+        $courseIds = array_merge($courseIds, $cotCourseIds);
+
+        $lmFirs = $this->getLeadingMentorFirs();
+
+        if (!empty($lmFirs)) {
+            $lmCourseIds = \DB::table('courses')
+                ->join('roles', 'courses.mentor_group_id', '=', 'roles.id')
+                ->where(function ($query) use ($lmFirs) {
+                    foreach ($lmFirs as $fir) {
+                        $query->orWhere('roles.name', 'LIKE', "%{$fir}%");
+                    }
+                })
+                ->pluck('courses.id')
                 ->toArray();
-            $courseIds = array_merge($courseIds, $mentorCourseIds);
+            $courseIds = array_merge($courseIds, $lmCourseIds);
+        }
 
-            $cotCourseIds = \DB::table('chief_of_trainings')
-                ->where('user_id', $this->id)
-                ->pluck('course_id')
-                ->toArray();
-            $courseIds = array_merge($courseIds, $cotCourseIds);
-
-            $lmFirs = \DB::table('leading_mentors')
-                ->where('user_id', $this->id)
-                ->pluck('fir')
-                ->toArray();
-
-            if (!empty($lmFirs)) {
-                $lmCourseIds = \DB::table('courses')
-                    ->join('roles', 'courses.mentor_group_id', '=', 'roles.id')
-                    ->where(function ($query) use ($lmFirs) {
-                        foreach ($lmFirs as $fir) {
-                            $query->orWhere('roles.name', 'LIKE', "%{$fir}%");
-                        }
-                    })
-                    ->pluck('courses.id')
-                    ->toArray();
-                $courseIds = array_merge($courseIds, $lmCourseIds);
-            }
-
-            return array_unique($courseIds);
-        });
+        return array_unique($courseIds);
     }
 
     public function canViewCourse(Course $course): bool
@@ -453,46 +471,16 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        $accessibleCourseIds = $this->getAccessibleCourseIds();
-
-        if (in_array($course->id, $accessibleCourseIds)) {
-            return true;
-        }
-
-        $isMentor = \DB::table('course_mentors')
-            ->where('course_id', $course->id)
-            ->where('user_id', $this->id)
-            ->exists();
-
-        if ($isMentor) {
-            return true;
-        }
-
-        $isCoT = \DB::table('chief_of_trainings')
-            ->where('course_id', $course->id)
-            ->where('user_id', $this->id)
-            ->exists();
-
-        if ($isCoT) {
+        if ($this->isChiefOfTrainingForCourse($course->id)) {
             return true;
         }
 
         if ($course->mentor_group_id) {
-            $mentorGroupName = \DB::table('roles')
-                ->where('id', $course->mentor_group_id)
-                ->value('name');
-
+            $mentorGroupName = $course->mentorGroup?->name;
             if ($mentorGroupName) {
                 $fir = $this->getFirFromMentorGroup($mentorGroupName);
-                if ($fir) {
-                    $isLM = \DB::table('leading_mentors')
-                        ->where('user_id', $this->id)
-                        ->where('fir', $fir)
-                        ->exists();
-
-                    if ($isLM) {
-                        return true;
-                    }
+                if ($fir && $this->isLeadingMentorForFir($fir)) {
+                    return true;
                 }
             }
         }
@@ -514,12 +502,7 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        $isCoT = \DB::table('chief_of_trainings')
-            ->where('user_id', $this->id)
-            ->where('course_id', $log->course_id)
-            ->exists();
-
-        if ($isCoT) {
+        if ($this->isChiefOfTrainingForCourse($log->course_id)) {
             return true;
         }
 
@@ -528,10 +511,7 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        $mentorGroupName = \DB::table('roles')
-            ->where('id', $course->mentor_group_id)
-            ->value('name');
-
+        $mentorGroupName = $course->mentorGroup?->name;
         if (!$mentorGroupName) {
             return false;
         }
@@ -541,10 +521,7 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        return \DB::table('leading_mentors')
-            ->where('user_id', $this->id)
-            ->where('fir', $fir)
-            ->exists();
+        return $this->isLeadingMentorForFir($fir);
     }
 
     public function canManageEndorsementsFor(Course $course): bool
@@ -553,12 +530,7 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        $isCoT = \DB::table('chief_of_trainings')
-            ->where('user_id', $this->id)
-            ->where('course_id', $course->id)
-            ->exists();
-
-        if ($isCoT) {
+        if ($this->isChiefOfTrainingForCourse($course->id)) {
             return true;
         }
 
@@ -566,10 +538,7 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        $mentorGroupName = \DB::table('roles')
-            ->where('id', $course->mentor_group_id)
-            ->value('name');
-
+        $mentorGroupName = $course->mentorGroup?->name;
         if (!$mentorGroupName) {
             return false;
         }
@@ -579,23 +548,16 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        return \DB::table('leading_mentors')
-            ->where('user_id', $this->id)
-            ->where('fir', $fir)
-            ->exists();
+        return $this->isLeadingMentorForFir($fir);
     }
 
     public function isChiefOfTraining(): bool
     {
-        return \DB::table('chief_of_trainings')
-            ->where('user_id', $this->id)
-            ->exists();
+        return !empty($this->getChiefOfTrainingCourseIds());
     }
 
     public function isLeadingMentor(): bool
     {
-        return \DB::table('leading_mentors')
-            ->where('user_id', $this->id)
-            ->exists();
+        return !empty($this->getLeadingMentorFirs());
     }
 }

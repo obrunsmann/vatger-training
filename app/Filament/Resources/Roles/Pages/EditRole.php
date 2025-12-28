@@ -18,16 +18,35 @@ class EditRole extends EditRecord
         ];
     }
 
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        \Log::info('EditRole: Form data before save', [
+            'role_id' => $this->record->id,
+            'has_permission_ids' => isset($data['permission_ids']),
+            'permission_ids' => $data['permission_ids'] ?? 'not set',
+        ]);
+
+        return $data;
+    }
+
     protected function handleRecordUpdate(Model $record, array $data): Model
     {
         $permissionIds = $data['permission_ids'] ?? [];
         unset($data['permission_ids']);
 
+        \Log::info('EditRole: Syncing permissions', [
+            'role_id' => $record->id,
+            'permission_ids' => $permissionIds,
+        ]);
+
         $record->update($data);
 
-        if (isset($permissionIds)) {
-            $record->permissions()->sync($permissionIds);
-        }
+        $record->permissions()->sync($permissionIds);
+
+        \Log::info('EditRole: Permissions after sync', [
+            'role_id' => $record->id,
+            'synced_ids' => $record->permissions()->pluck('permissions.id')->toArray(),
+        ]);
 
         return $record;
     }

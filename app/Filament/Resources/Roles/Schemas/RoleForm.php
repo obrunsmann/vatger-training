@@ -44,10 +44,9 @@ class RoleForm
                             })
                             ->columns(2)
                             ->gridDirection('row')
-                            ->dehydrated(false)
                             ->afterStateHydrated(function ($component, $state, $record) {
                                 if ($record) {
-                                    $component->state($record->permissions()->pluck('permissions.id')->toArray());
+                                    $component->state($record->permissions->pluck('id')->toArray());
                                 }
                             }),
                     ])->columns(1),

@@ -100,22 +100,15 @@ class CourseResource extends Resource
             return true;
         }
 
-        if ($user->isChiefOfTraining()) {
-            $isCoT = \DB::table('chief_of_trainings')
-                ->where('user_id', $user->id)
-                ->where('course_id', $record->id)
-                ->exists();
-
-            if ($isCoT) {
-                return true;
+        if ($user->isLeadingMentor() && $record->mentor_group_id) {
+            $mentorGroupName = $record->mentorGroup?->name;
+            if ($mentorGroupName) {
+                $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                if ($fir && $user->isLeadingMentorForFir($fir)) {
+                    return true;
+                }
             }
-        }
-
-        if ($user->isLeadingMentor() && $record->mentorGroup) {
-            $fir = $user->getFirFromMentorGroup($record->mentorGroup->name);
-            if ($fir && $user->leadingMentorFirs()->where('fir', $fir)->exists()) {
-                return true;
-            }
+            return false;
         }
 
         return $user->canEditAdminResource('courses');
@@ -144,22 +137,15 @@ class CourseResource extends Resource
             return true;
         }
 
-        if ($user->isChiefOfTraining()) {
-            $isCoT = \DB::table('chief_of_trainings')
-                ->where('user_id', $user->id)
-                ->where('course_id', $record->id)
-                ->exists();
-
-            if ($isCoT) {
-                return true;
+        if ($user->isLeadingMentor() && $record->mentor_group_id) {
+            $mentorGroupName = $record->mentorGroup?->name;
+            if ($mentorGroupName) {
+                $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                if ($fir && $user->isLeadingMentorForFir($fir)) {
+                    return true;
+                }
             }
-        }
-
-        if ($user->isLeadingMentor() && $record->mentorGroup) {
-            $fir = $user->getFirFromMentorGroup($record->mentorGroup->name);
-            if ($fir && $user->leadingMentorFirs()->where('fir', $fir)->exists()) {
-                return true;
-            }
+            return false;
         }
 
         return $user->canAccessAdminResource('courses');
@@ -167,7 +153,7 @@ class CourseResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        $query = parent::getEloquentQuery();
+        $query = parent::getEloquentQuery()->with('mentorGroup');
         $user = Filament::auth()->user();
 
         if (!$user) {
@@ -178,40 +164,26 @@ class CourseResource extends Resource
             return $query;
         }
 
-        $accessibleCourseIds = [];
-
-        if ($user->isChiefOfTraining()) {
-            $cotCourseIds = \DB::table(table: 'chief_of_trainings')
-                ->where('user_id', $user->id)
-                ->pluck('course_id')
-                ->toArray();
-            $accessibleCourseIds = array_merge($accessibleCourseIds, $cotCourseIds);
-        }
-
         if ($user->isLeadingMentor()) {
-            $userFirs = $user->leadingMentorFirs()->pluck('fir')->toArray();
-            
-            if (!empty($userFirs)) {
-                $lmCourseIds = Course::whereHas('mentorGroup', function ($q) use ($userFirs) {
-                    $q->where(function ($q2) use ($userFirs) {
-                        foreach ($userFirs as $fir) {
-                            $q2->orWhere('name', 'LIKE', "%{$fir}%");
-                        }
-                    });
-                })->pluck('id')->toArray();
+            $lmFirs = $user->getLeadingMentorFirs();
 
-                $accessibleCourseIds = array_merge($accessibleCourseIds, $lmCourseIds);
+            if (empty($lmFirs)) {
+                return $query->whereRaw('1 = 0');
             }
+
+            return $query->whereHas('mentorGroup', function ($q) use ($lmFirs) {
+                $q->where(function ($q2) use ($lmFirs) {
+                    foreach ($lmFirs as $fir) {
+                        $q2->orWhere('name', 'LIKE', "%{$fir}%");
+                    }
+                });
+            });
         }
 
         if ($user->canAccessAdminResource('courses')) {
             return $query;
         }
 
-        if (empty($accessibleCourseIds)) {
-            return $query->whereRaw('1 = 0');
-        }
-
-        return $query->whereIn('id', array_unique($accessibleCourseIds));
+        return $query->whereRaw('1 = 0');
     }
 }
