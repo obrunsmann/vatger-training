@@ -143,11 +143,11 @@ class VatsimActivityService
         $activityMinutes = 0;
         $position = $endorsement['position'];
         $lastActivityDate = null;
-        
-        Log::debug('Starting activity calculation', [
+
+        /* Log::debug('Starting activity calculation', [
             'position' => $position,
             'connections_count' => count($connections)
-        ]);
+        ]); */
         
         if (str_ends_with($position, '_CTR')) {
             // CTR position logic
