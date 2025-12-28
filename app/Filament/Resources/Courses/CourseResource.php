@@ -14,6 +14,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Filament\Facades\Filament;
+use Illuminate\Database\Eloquent\Builder;
 
 class CourseResource extends Resource
 {
@@ -59,7 +60,7 @@ class CourseResource extends Resource
 
     public static function canViewAny(): bool
     {
-        $user = auth()->user();
+        $user = Filament::auth()->user();
 
         if (!$user) {
             return false;
@@ -69,7 +70,18 @@ class CourseResource extends Resource
             return true;
         }
 
-        if ($user->isLeadingMentor()) {
+        return $user->canAccessAdminResource('courses');
+    }
+
+    public static function canCreate(): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->is_superuser || $user->is_admin) {
             return true;
         }
 
@@ -84,7 +96,10 @@ class CourseResource extends Resource
             return true;
         }
 
-        // Leading Mentors can edit courses in their FIR
+        if (!$user->canEditAdminResource('courses')) {
+            return false;
+        }
+
         if ($user->isLeadingMentor() && $record->mentorGroup) {
             $fir = $user->getFirFromMentorGroup($record->mentorGroup->name);
             if ($fir && $user->leadingMentorFirs()->where('fir', $fir)->exists()) {
@@ -93,5 +108,42 @@ class CourseResource extends Resource
         }
 
         return false;
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = Filament::auth()->user();
+
+        if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery();
+        $user = Filament::auth()->user();
+
+        if ($user->is_superuser || $user->is_admin) {
+            return $query;
+        }
+
+        if ($user->isLeadingMentor()) {
+            $userFirs = $user->leadingMentorFirs()->pluck('fir')->toArray();
+
+            if (!empty($userFirs)) {
+                $query->whereHas('mentorGroup', function ($q) use ($userFirs) {
+                    $q->where(function ($q2) use ($userFirs) {
+                        foreach ($userFirs as $fir) {
+                            $q2->orWhere('name', 'LIKE', "%{$fir}%");
+                        }
+                    });
+                });
+            }
+        }
+
+        return $query;
     }
 }

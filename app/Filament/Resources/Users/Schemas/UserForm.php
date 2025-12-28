@@ -82,7 +82,7 @@ class UserForm
                             ->suffix('days')
                     ])->columns(2),
 
-                Section::make('Permissions')
+                Section::make('System Permissions')
                     ->schema([
                         Forms\Components\Toggle::make('is_staff')
                             ->label('Staff Member')
@@ -95,14 +95,38 @@ class UserForm
                         Forms\Components\Toggle::make('is_admin')
                             ->label('Admin Account')
                             ->helperText('Non-VATSIM admin account for development/emergency access'),
+                    ])->columns(3),
 
+                Section::make('Roles & Permissions')
+                    ->schema([
                         Forms\Components\Select::make('roles')
                             ->label('Roles')
                             ->relationship('roles', 'name')
                             ->multiple()
                             ->preload()
                             ->helperText('Assign mentor or leadership roles'),
-                    ])->columns(2),
+
+                        Forms\Components\Select::make('permissions')
+                            ->label('Direct Permissions')
+                            ->relationship('permissions', 'name')
+                            ->multiple()
+                            ->preload()
+                            ->searchable()
+                            ->helperText('Grant specific permissions to this user (in addition to role-based permissions)')
+                            ->options(function () {
+                                return \App\Models\Permission::query()
+                                    ->orderBy('group')
+                                    ->orderBy('name')
+                                    ->get()
+                                    ->groupBy('group')
+                                    ->flatMap(function ($permissions, $group) {
+                                        return $permissions->pluck('name', 'id')->mapWithKeys(function ($name, $id) use ($group) {
+                                            return [$id => ($group ? "[$group] " : '') . $name];
+                                        });
+                                    })
+                                    ->toArray();
+                            }),
+                    ])->columns(1),
             ]);
     }
 }

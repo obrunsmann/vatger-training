@@ -13,6 +13,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Filament\Facades\Filament;
 
 class ExaminerResource extends Resource
 {
@@ -59,5 +60,61 @@ class ExaminerResource extends Resource
     public static function getNavigationLabel(): string
     {
         return 'Examiners';
+    }
+
+    public static function canViewAny(): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->is_admin || $user->is_superuser) {
+            return true;
+        }
+
+        return $user->canAccessAdminResource('examiners');
+    }
+
+    public static function canCreate(): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        return $user->canEditAdminResource('examiners');
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        return $user->canEditAdminResource('examiners');
+    }
+
+    public static function canDelete(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        return $user->is_superuser || $user->is_admin;
     }
 }

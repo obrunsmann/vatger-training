@@ -14,11 +14,6 @@ class User extends Authenticatable implements FilamentUser
 {
     use HasFactory, Notifiable;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'vatsim_id',
         'first_name',
@@ -34,21 +29,11 @@ class User extends Authenticatable implements FilamentUser
         'solo_days_used',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
         'last_rating_change' => 'datetime',
         'is_staff' => 'boolean',
@@ -61,74 +46,46 @@ class User extends Authenticatable implements FilamentUser
         'solo_days_used' => 'integer',
     ];
 
-    /**
-     * Get the route key for the model.
-     * This makes the model use vatsim_id for route model binding instead of id
-     */
     public function getRouteKeyName()
     {
         return 'vatsim_id';
     }
 
-    /**
-     * Get the user's full name.
-     */
     public function getFullNameAttribute(): string
     {
         return "{$this->first_name} {$this->last_name}";
     }
 
-    /**
-     * Get the name attribute for compatibility
-     */
     public function getNameAttribute(): string
     {
         return $this->full_name;
     }
 
-    /**
-     * Check if user is a mentor (has any mentor role)
-     */
     public function isMentor(): bool
     {
         return $this->hasAnyRole(['EDGG Mentor', 'EDMM Mentor', 'EDWW Mentor', 'ATD Leitung', 'VATGER Leitung']);
     }
 
-    /**
-     * Check if user is a superuser
-     */
     public function isSuperuser(): bool
     {
         return $this->is_superuser === true || $this->is_admin === true;
     }
 
-    /**
-     * Check if user is ATD or VATGER leadership
-     */
     public function isLeadership(): bool
     {
         return $this->hasAnyRole(['ATD Leitung', 'VATGER Leitung']);
     }
 
-    /**
-     * Check if user has any of the given roles
-     */
     public function hasAnyRole(array $roles): bool
     {
         return $this->roles()->whereIn('name', $roles)->exists();
     }
 
-    /**
-     * Many-to-many relationship with roles
-     */
     public function roles()
     {
         return $this->belongsToMany(Role::class, 'user_roles');
     }
 
-    /**
-     * Scope to filter mentors
-     */
     public function scopeMentors($query)
     {
         return $query->whereHas('roles', function ($q) {
@@ -136,9 +93,6 @@ class User extends Authenticatable implements FilamentUser
         });
     }
 
-    /**
-     * Scope to filter leadership
-     */
     public function scopeLeadership($query)
     {
         return $query->whereHas('roles', function ($q) {
@@ -146,49 +100,31 @@ class User extends Authenticatable implements FilamentUser
         });
     }
 
-    /**
-     * Check if user is an admin account (for development/emergency access)
-     */
     public function isAdmin(): bool
     {
         return $this->is_admin === true;
     }
 
-    /**
-     * Check if user is a VATSIM user (has vatsim_id)
-     */
     public function isVatsimUser(): bool
     {
         return !empty($this->vatsim_id);
     }
 
-    /**
-     * Scope to get only admin accounts
-     */
     public function scopeAdmins($query)
     {
         return $query->where('is_admin', true);
     }
 
-    /**
-     * Scope to get only VATSIM users
-     */
     public function scopeVatsimUsers($query)
     {
         return $query->whereNotNull('vatsim_id');
     }
 
-    /**
-     * Get user's endorsement activities
-     */
     public function endorsementActivities()
     {
         return $this->hasMany(EndorsementActivity::class, 'vatsim_id', 'vatsim_id');
     }
 
-    /**
-     * Check if user has any active Tier 1 endorsements
-     */
     public function hasActiveTier1Endorsements(): bool
     {
         if (!$this->isVatsimUser()) {
@@ -200,9 +136,6 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
-    /**
-     * Get user's endorsement summary
-     */
     public function getEndorsementSummary(): array
     {
         if (!$this->isVatsimUser()) {
@@ -220,19 +153,14 @@ class User extends Authenticatable implements FilamentUser
             ->where('activity_minutes', '<', $minRequiredMinutes)
             ->count();
 
-        // Note: Tier 2 and Solo counts would need to be fetched from VatEUD
-        // This is a simplified version for the model
         return [
             'tier1_count' => $tier1Count,
-            'tier2_count' => 0, // Would need VatEUD service call
-            'solo_count' => 0,  // Would need VatEUD service call
+            'tier2_count' => 0,
+            'solo_count' => 0,
             'low_activity_count' => $lowActivityCount,
         ];
     }
 
-    /**
-     * Check if user needs attention for endorsements (low activity, removal warnings, etc.)
-     */
     public function needsEndorsementAttention(): bool
     {
         if (!$this->isVatsimUser()) {
@@ -248,9 +176,6 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
-    /**
-     * Get courses where user is an active trainee
-     */
     public function activeCourses()
     {
         return $this->belongsToMany(Course::class, 'course_trainees')
@@ -267,33 +192,21 @@ class User extends Authenticatable implements FilamentUser
             ->withTimestamps();
     }
 
-    /**
-     * Get courses where user is a mentor
-     */
     public function mentorCourses()
     {
         return $this->belongsToMany(Course::class, 'course_mentors');
     }
 
-    /**
-     * Get active rating courses only
-     */
     public function activeRatingCourses()
     {
         return $this->activeCourses()->where('type', 'RTG');
     }
 
-    /**
-     * Get waiting list entries for this user
-     */
     public function waitingListEntries()
     {
         return $this->hasMany(WaitingListEntry::class);
     }
 
-    /**
-     * Get familiarisations for this user
-     */
     public function familiarisations()
     {
         return $this->hasMany(Familiarisation::class);
@@ -301,53 +214,58 @@ class User extends Authenticatable implements FilamentUser
 
     public function canAccessPanel(Panel $panel): bool
     {
-        return $this->is_superuser || $this->is_admin || $this->isLeadingMentor();
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        return $this->hasPermission('admin.access');
     }
 
-    /**
-     * Get training logs where user is the trainee
-     */
+    public function canAccessAdminResource(string $resource): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        $permissionName = "admin.{$resource}.view";
+        return $this->hasPermission($permissionName);
+    }
+
+    public function canEditAdminResource(string $resource): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        $permissionName = "admin.{$resource}.edit";
+        return $this->hasPermission($permissionName);
+    }
+
     public function trainingLogs()
     {
         return $this->hasMany(TrainingLog::class, 'trainee_id');
     }
 
-
-    /**
-     * Get examiner profile if user is an examiner
-     */
     public function examiner()
     {
         return $this->hasOne(Examiner::class);
     }
 
-    /**
-     * Check if user is an examiner
-     */
     public function isExaminer(): bool
     {
         return $this->examiner()->exists();
     }
 
-    /**
-     * Get CPTs where user is the trainee
-     */
     public function cpts()
     {
         return $this->hasMany(Cpt::class, 'trainee_id');
     }
 
-    /**
-     * Get CPTs where user is the examiner
-     */
     public function examinedCpts()
     {
         return $this->hasMany(Cpt::class, 'examiner_id');
     }
 
-    /**
-     * Get CPTs where user is the local contact
-     */
     public function localCpts()
     {
         return $this->hasMany(Cpt::class, 'local_id');
@@ -370,12 +288,10 @@ class User extends Authenticatable implements FilamentUser
 
     public function hasPermission(string $permissionName): bool
     {
-        // Check direct permissions
         if ($this->permissions()->where('name', $permissionName)->exists()) {
             return true;
         }
 
-        // Check role-based permissions
         return $this->roles()
             ->whereHas('permissions', function ($query) use ($permissionName) {
                 $query->where('name', $permissionName);
@@ -392,7 +308,6 @@ class User extends Authenticatable implements FilamentUser
 
         $airportIcao = $parts[0];
 
-        // Handle GNDDEL case
         if (count($parts) > 2 && $parts[1] === 'GNDDEL') {
             $positionType = 'GND';
         } else {
@@ -406,12 +321,10 @@ class User extends Authenticatable implements FilamentUser
 
     public function canRemoveEndorsementForPosition(string $position): bool
     {
-        // Superuser/admin always can
         if ($this->is_superuser || $this->is_admin) {
             return true;
         }
 
-        // Original logic: Check mentor courses for this position
         $allowedPositions = $this->mentorCourses
             ->flatMap(function (Course $course) {
                 $airport = $course->airport_icao;
@@ -426,12 +339,10 @@ class User extends Authenticatable implements FilamentUser
             ->unique()
             ->values();
 
-        // If user is a regular mentor for this position, they can manage it
         if ($allowedPositions->contains($position)) {
             return true;
         }
 
-        // New logic: Check CoT/LM permissions
         $course = $this->findCourseByPosition($position);
         if ($course) {
             return $this->canManageEndorsementsFor($course);
@@ -462,27 +373,23 @@ class User extends Authenticatable implements FilamentUser
             return Course::pluck('id')->toArray();
         }
 
-        // Use cache to avoid recalculating on every request
         $cacheKey = "user_{$this->id}_accessible_courses";
 
         return \Cache::remember($cacheKey, now()->addMinutes(5), function () {
             $courseIds = [];
 
-            // Courses where user is a mentor (direct relationship)
             $mentorCourseIds = \DB::table('course_mentors')
                 ->where('user_id', $this->id)
                 ->pluck('course_id')
                 ->toArray();
             $courseIds = array_merge($courseIds, $mentorCourseIds);
 
-            // Courses where user is CoT (direct table query)
             $cotCourseIds = \DB::table('chief_of_trainings')
                 ->where('user_id', $this->id)
                 ->pluck('course_id')
                 ->toArray();
             $courseIds = array_merge($courseIds, $cotCourseIds);
 
-            // Courses where user is LM (join with courses and roles)
             $lmFirs = \DB::table('leading_mentors')
                 ->where('user_id', $this->id)
                 ->pluck('fir')
@@ -511,17 +418,12 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check if course ID is in accessible courses (uses cache)
         $accessibleCourseIds = $this->getAccessibleCourseIds();
 
         if (in_array($course->id, $accessibleCourseIds)) {
             return true;
         }
 
-        // Fallback: Double-check with direct queries
-        // This handles edge cases where cache might be stale
-
-        // Check if regular mentor
         $isMentor = \DB::table('course_mentors')
             ->where('course_id', $course->id)
             ->where('user_id', $this->id)
@@ -531,7 +433,6 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check if CoT
         $isCoT = \DB::table('chief_of_trainings')
             ->where('course_id', $course->id)
             ->where('user_id', $this->id)
@@ -541,7 +442,6 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check if LM
         if ($course->mentor_group_id) {
             $mentorGroupName = \DB::table('roles')
                 ->where('id', $course->mentor_group_id)
@@ -571,17 +471,14 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Original mentor can always edit
         if ($this->id === $log->mentor_id) {
             return true;
         }
 
-        // If no course associated, can't edit
         if (!$log->course_id) {
             return false;
         }
 
-        // Check CoT directly with simple query
         $isCoT = \DB::table('chief_of_trainings')
             ->where('user_id', $this->id)
             ->where('course_id', $log->course_id)
@@ -591,7 +488,6 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check LM - get course's FIR first
         $course = $log->course;
         if (!$course || !$course->mentor_group_id) {
             return false;
@@ -610,7 +506,6 @@ class User extends Authenticatable implements FilamentUser
             return false;
         }
 
-        // Check if user is LM for this FIR
         return \DB::table('leading_mentors')
             ->where('user_id', $this->id)
             ->where('fir', $fir)
@@ -623,7 +518,6 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check if CoT for this course
         $isCoT = \DB::table('chief_of_trainings')
             ->where('user_id', $this->id)
             ->where('course_id', $course->id)
@@ -633,7 +527,6 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
-        // Check if LM for this course's FIR
         if (!$course->mentor_group_id) {
             return false;
         }
