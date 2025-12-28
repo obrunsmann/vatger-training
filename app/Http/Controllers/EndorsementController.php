@@ -76,8 +76,6 @@ class EndorsementController extends Controller
         }
     }
 
-    // app/Http/Controllers/EndorsementController.php
-
     public function mentorView(Request $request): Response
     {
         $user = $request->user();
@@ -86,11 +84,10 @@ class EndorsementController extends Controller
             abort(403, 'Access denied. Mentor privileges required.');
         }
 
-        // Original logic for determining allowed positions
         if ($user->is_superuser || $user->is_admin) {
             $allowedPositions = null;
+            $canRemoveAny = true;
         } else {
-            // Get positions from mentor courses
             $mentorPositions = $user->mentorCourses
                 ->flatMap(function (Course $course) {
                     $airport = $course->airport_icao;
@@ -105,7 +102,6 @@ class EndorsementController extends Controller
                 ->unique()
                 ->values();
 
-            // Get positions from CoT courses
             $cotPositions = $user->chiefOfTrainingCourses
                 ->flatMap(function (Course $course) {
                     $airport = $course->airport_icao;
@@ -120,9 +116,9 @@ class EndorsementController extends Controller
                 ->unique()
                 ->values();
 
-            // Get positions from LM FIRs
             $lmPositions = collect([]);
             $lmFirs = $user->leadingMentorFirs()->pluck('fir');
+    
 
             if ($lmFirs->isNotEmpty()) {
                 $lmCourses = Course::whereHas('mentorGroup', function ($query) use ($lmFirs) {
@@ -143,14 +139,20 @@ class EndorsementController extends Controller
                 })
                     ->unique()
                     ->values();
-        }
+            }
 
-            // Combine all positions
             $allowedPositions = $mentorPositions
                 ->merge($cotPositions)
                 ->merge($lmPositions)
                 ->unique()
                 ->values();
+
+            $canRemovePositions = $cotPositions
+                ->merge($lmPositions)
+                ->unique()
+                ->values();
+
+            $canRemoveAny = $canRemovePositions->isNotEmpty();
         }
 
         $allTier1 = $this->vatEudService->getTier1Endorsements();
@@ -226,6 +228,10 @@ class EndorsementController extends Controller
 
         return Inertia::render('endorsements/manage', [
             'endorsementGroups' => $endorsementsByPosition,
+            'userPermissions' => [
+                'canRemoveForPositions' => $user->is_superuser || $user->is_admin ? null : $canRemovePositions->toArray(),
+                'canRemoveAny' => $canRemoveAny,
+            ],
         ]);
     }
 

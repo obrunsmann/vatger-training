@@ -52,6 +52,10 @@ interface EndorsementGroupData {
 
 interface PageProps {
     endorsementGroups: EndorsementGroupData[];
+    userPermissions: {
+        canRemoveForPositions: string[] | null; // null means can remove all (admin)
+        canRemoveAny: boolean;
+    };
 }
 
 const formatRemovalDate = (removalDate: string | null, removalDays: number) => {
@@ -79,7 +83,7 @@ const getEndorsementState = (endorsement: EndorsementData): 'active' | 'low-acti
     return 'active';
 };
 
-export default function ManageEndorsements({ endorsementGroups: initialGroups }: PageProps) {
+export default function ManageEndorsements({ endorsementGroups: initialGroups, userPermissions }: PageProps) {
     const [endorsementGroups, setEndorsementGroups] = useState(initialGroups);
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
@@ -90,7 +94,14 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
     const [isProcessing, setIsProcessing] = useState(false);
     const [showActiveEndorsements, setShowActiveEndorsements] = useState(false);
 
-    // Update endorsement in state
+    const canRemoveForPosition = (position: string): boolean => {
+        if (userPermissions.canRemoveForPositions === null) {
+            return true;
+        }
+
+        return userPermissions.canRemoveForPositions.includes(position);
+    };
+
     const updateEndorsementInState = useCallback((endorsementId: number, updates: Partial<EndorsementData>) => {
         setEndorsementGroups((prevGroups) =>
             prevGroups.map((group) => ({
@@ -432,7 +443,12 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                                                                         size="sm"
                                                                         variant="destructive"
                                                                         onClick={() => openRemovalDialog(endorsement)}
-                                                                        disabled={state === 'in-removal' || state === 'active' || isProcessing}
+                                                                        disabled={
+                                                                            state === 'in-removal' ||
+                                                                            state === 'active' ||
+                                                                            isProcessing ||
+                                                                            !canRemoveForPosition(selectedGroup?.position ?? '')
+                                                                        }
                                                                     >
                                                                         <AlertTriangle className="mr-1 h-4 w-4" />
                                                                         Mark for Removal
@@ -450,6 +466,16 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                                                                     <p>Endorsement is active - cannot mark for removal</p>
                                                                 </TooltipContent>
                                                             )}
+                                                            {!canRemoveForPosition(selectedGroup?.position ?? '') &&
+                                                                state !== 'in-removal' &&
+                                                                state !== 'active' && (
+                                                                    <TooltipContent>
+                                                                        <p>You don't have permission to remove endorsements for this position</p>
+                                                                        <p className="mt-1 text-xs">
+                                                                            Only Chief of Training or Leading Mentor can remove endorsements
+                                                                        </p>
+                                                                    </TooltipContent>
+                                                                )}
                                                         </Tooltip>
                                                     </TooltipProvider>
                                                 </TableCell>

@@ -73,7 +73,6 @@ class TrainingLogPolicy
             return true;
         }
 
-        // NEW: Use the canEditTrainingLog method from User model
         return $user->canEditTrainingLog($log);
     }
 

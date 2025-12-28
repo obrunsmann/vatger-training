@@ -247,7 +247,8 @@ class TrainingLogController extends Controller
         }
 
         $canViewInternal = $isLogMentor || $isCourseMentor || $isAdmin;
-        $canEdit = ($isLogMentor || $isAdmin);
+
+        $canEdit = $user->canEditTrainingLog($log);
 
         return Inertia::render('training/logs/view', [
             'log' => $this->formatLogForFrontend($log, $canViewInternal),
@@ -262,12 +263,8 @@ class TrainingLogController extends Controller
         $user = $request->user();
         $log = TrainingLog::with(['trainee', 'mentor', 'course'])->findOrFail($id);
 
-        if ($user->id !== $log->mentor_id && !$user->is_superuser && !$user->is_admin) {
+        if (!$user->canEditTrainingLog($log)) {
             abort(403, 'You do not have permission to edit this log.');
-        }
-
-        if ($log->course && !$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $log->course_id)->exists()) {
-            abort(403, 'You are no longer a mentor for this course.');
         }
 
         $categories = $this->getEvaluationCategories();
@@ -302,7 +299,7 @@ class TrainingLogController extends Controller
         $user = $request->user();
         $log = TrainingLog::findOrFail($id);
 
-        if ($user->id !== $log->mentor_id && !$user->is_superuser) {
+        if (!$user->canEditTrainingLog($log)) {
             return back()->withErrors(['error' => 'You do not have permission to edit this log.']);
         }
 
@@ -416,7 +413,7 @@ class TrainingLogController extends Controller
         $user = $request->user();
         $log = TrainingLog::findOrFail($id);
 
-        if ($user->id !== $log->mentor_id && !$user->is_superuser) {
+        if (!$user->canEditTrainingLog($log)) {
             return back()->withErrors(['error' => 'You do not have permission to delete this log.']);
         }
 
