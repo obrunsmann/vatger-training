@@ -76,6 +76,8 @@ class EndorsementController extends Controller
         }
     }
 
+    // app/Http/Controllers/EndorsementController.php
+
     public function mentorView(Request $request): Response
     {
         $user = $request->user();
@@ -84,28 +86,73 @@ class EndorsementController extends Controller
             abort(403, 'Access denied. Mentor privileges required.');
         }
 
+        // Original logic for determining allowed positions
         if ($user->is_superuser || $user->is_admin) {
             $allowedPositions = null;
         } else {
-            $allowedPositions = $user->mentorCourses
+            // Get positions from mentor courses
+            $mentorPositions = $user->mentorCourses
                 ->flatMap(function (Course $course) {
                     $airport = $course->airport_icao;
                     $position = $course->position;
 
                     if ($position === 'GND') {
-                        return [
-                            "{$airport}_GNDDEL",
-                        ];
+                        return ["{$airport}_GNDDEL"];
                     }
 
-                    return [
-                        "{$airport}_{$position}",
-                    ];
+                    return ["{$airport}_{$position}"];
                 })
                 ->unique()
                 ->values();
+
+            // Get positions from CoT courses
+            $cotPositions = $user->chiefOfTrainingCourses
+                ->flatMap(function (Course $course) {
+                    $airport = $course->airport_icao;
+                    $position = $course->position;
+
+                    if ($position === 'GND') {
+                        return ["{$airport}_GNDDEL"];
+                    }
+
+                    return ["{$airport}_{$position}"];
+                })
+                ->unique()
+                ->values();
+
+            // Get positions from LM FIRs
+            $lmPositions = collect([]);
+            $lmFirs = $user->leadingMentorFirs()->pluck('fir');
+
+            if ($lmFirs->isNotEmpty()) {
+                $lmCourses = Course::whereHas('mentorGroup', function ($query) use ($lmFirs) {
+                    foreach ($lmFirs as $fir) {
+                        $query->orWhere('name', 'LIKE', "%{$fir}%");
+                    }
+                })->get();
+
+                $lmPositions = $lmCourses->flatMap(function (Course $course) {
+                    $airport = $course->airport_icao;
+                    $position = $course->position;
+
+                    if ($position === 'GND') {
+                        return ["{$airport}_GNDDEL"];
+                    }
+
+                    return ["{$airport}_{$position}"];
+                })
+                    ->unique()
+                    ->values();
         }
-        
+
+            // Combine all positions
+            $allowedPositions = $mentorPositions
+                ->merge($cotPositions)
+                ->merge($lmPositions)
+                ->unique()
+                ->values();
+        }
+
         $allTier1 = $this->vatEudService->getTier1Endorsements();
 
         $endorsementIds = collect($allTier1)->pluck('id')->toArray();
@@ -121,17 +168,14 @@ class EndorsementController extends Controller
 
         $endorsements = collect($allTier1)
             ->map(function ($endorsement) use ($activities, $users) {
-
                 $activity = $activities->get($endorsement['id']);
                 if (!$activity) {
                     return null;
                 }
 
                 $createdAt = Carbon::parse($endorsement['created_at']);
-
                 $olderThanSixMonths = $createdAt->lte(now()->subMonths(6));
                 $hasGoodActivity = $activity->activity_hours >= 3;
-
                 $shouldBeVisible = $hasGoodActivity || $olderThanSixMonths;
 
                 if (!$shouldBeVisible) {
@@ -202,24 +246,12 @@ class EndorsementController extends Controller
                 'error' => 'Endorsement not found'
             ]);
             return back()->with('error', 'Endorsement not found');
-
         }
 
+        // Original permission check - preserved exactly
         if (!$user->is_superuser && !$user->is_admin) {
-            $allowedPositions = $user->mentorCourses
-                ->flatMap(function (Course $course) {
-                    $airport = $course->airport_icao;
-                    $position = $course->position;
-
-                    if ($position === 'GND') {
-                        return ["{$airport}_GNDDEL"];
-                    }
-
-                    return ["{$airport}_{$position}"];
-                })
-                ->unique();
-
-            if (!$allowedPositions->contains($endorsement->position)) {
+            // Check if user can remove this endorsement based on position
+            if (!$user->canRemoveEndorsementForPosition($endorsement->position)) {
                 return back()->with('error', 'You do not have permission to manage this endorsement');
             }
         }

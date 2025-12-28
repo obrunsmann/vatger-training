@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Filament\Models\Contracts\FilamentUser;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Filament\Panel;
@@ -300,7 +301,7 @@ class User extends Authenticatable implements FilamentUser
 
     public function canAccessPanel(Panel $panel): bool
     {
-        return $this->is_superuser || $this->is_admin;
+        return $this->is_superuser || $this->is_admin || $this->isLeadingMentor();
     }
 
     /**
@@ -350,5 +351,323 @@ class User extends Authenticatable implements FilamentUser
     public function localCpts()
     {
         return $this->hasMany(Cpt::class, 'local_id');
+    }
+
+    public function permissions(): BelongsToMany
+    {
+        return $this->belongsToMany(Permission::class, 'user_permissions');
+    }
+
+    public function chiefOfTrainingCourses()
+    {
+        return $this->belongsToMany(Course::class, 'chief_of_trainings');
+    }
+
+    public function leadingMentorFirs()
+    {
+        return $this->hasMany(LeadingMentor::class);
+    }
+
+    public function hasPermission(string $permissionName): bool
+    {
+        // Check direct permissions
+        if ($this->permissions()->where('name', $permissionName)->exists()) {
+            return true;
+        }
+
+        // Check role-based permissions
+        return $this->roles()
+            ->whereHas('permissions', function ($query) use ($permissionName) {
+                $query->where('name', $permissionName);
+            })
+            ->exists();
+    }
+
+    private function findCourseByPosition(string $position): ?Course
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $airportIcao = $parts[0];
+
+        // Handle GNDDEL case
+        if (count($parts) > 2 && $parts[1] === 'GNDDEL') {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->first();
+    }
+
+    public function canRemoveEndorsementForPosition(string $position): bool
+    {
+        // Superuser/admin always can
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        // Original logic: Check mentor courses for this position
+        $allowedPositions = $this->mentorCourses
+            ->flatMap(function (Course $course) {
+                $airport = $course->airport_icao;
+                $position = $course->position;
+
+                if ($position === 'GND') {
+                    return ["{$airport}_GNDDEL"];
+                }
+
+                return ["{$airport}_{$position}"];
+            })
+            ->unique()
+            ->values();
+
+        // If user is a regular mentor for this position, they can manage it
+        if ($allowedPositions->contains($position)) {
+            return true;
+        }
+
+        // New logic: Check CoT/LM permissions
+        $course = $this->findCourseByPosition($position);
+        if ($course) {
+            return $this->canManageEndorsementsFor($course);
+        }
+
+        return false;
+    }
+
+    public function getFirFromMentorGroup(?string $groupName): ?string
+    {
+        if (!$groupName) {
+            return null;
+        }
+
+        if (str_contains($groupName, 'EDGG'))
+            return 'EDGG';
+        if (str_contains($groupName, 'EDMM'))
+            return 'EDMM';
+        if (str_contains($groupName, 'EDWW'))
+            return 'EDWW';
+
+        return null;
+    }
+
+    public function getAccessibleCourseIds(): array
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return Course::pluck('id')->toArray();
+        }
+
+        // Use cache to avoid recalculating on every request
+        $cacheKey = "user_{$this->id}_accessible_courses";
+
+        return \Cache::remember($cacheKey, now()->addMinutes(5), function () {
+            $courseIds = [];
+
+            // Courses where user is a mentor (direct relationship)
+            $mentorCourseIds = \DB::table('course_mentors')
+                ->where('user_id', $this->id)
+                ->pluck('course_id')
+                ->toArray();
+            $courseIds = array_merge($courseIds, $mentorCourseIds);
+
+            // Courses where user is CoT (direct table query)
+            $cotCourseIds = \DB::table('chief_of_trainings')
+                ->where('user_id', $this->id)
+                ->pluck('course_id')
+                ->toArray();
+            $courseIds = array_merge($courseIds, $cotCourseIds);
+
+            // Courses where user is LM (join with courses and roles)
+            $lmFirs = \DB::table('leading_mentors')
+                ->where('user_id', $this->id)
+                ->pluck('fir')
+                ->toArray();
+
+            if (!empty($lmFirs)) {
+                $lmCourseIds = \DB::table('courses')
+                    ->join('roles', 'courses.mentor_group_id', '=', 'roles.id')
+                    ->where(function ($query) use ($lmFirs) {
+                        foreach ($lmFirs as $fir) {
+                            $query->orWhere('roles.name', 'LIKE', "%{$fir}%");
+                        }
+                    })
+                    ->pluck('courses.id')
+                    ->toArray();
+                $courseIds = array_merge($courseIds, $lmCourseIds);
+            }
+
+            return array_unique($courseIds);
+        });
+    }
+
+    public function canViewCourse(Course $course): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        // Check if course ID is in accessible courses (uses cache)
+        $accessibleCourseIds = $this->getAccessibleCourseIds();
+
+        if (in_array($course->id, $accessibleCourseIds)) {
+            return true;
+        }
+
+        // Fallback: Double-check with direct queries
+        // This handles edge cases where cache might be stale
+
+        // Check if regular mentor
+        $isMentor = \DB::table('course_mentors')
+            ->where('course_id', $course->id)
+            ->where('user_id', $this->id)
+            ->exists();
+
+        if ($isMentor) {
+            return true;
+        }
+
+        // Check if CoT
+        $isCoT = \DB::table('chief_of_trainings')
+            ->where('course_id', $course->id)
+            ->where('user_id', $this->id)
+            ->exists();
+
+        if ($isCoT) {
+            return true;
+        }
+
+        // Check if LM
+        if ($course->mentor_group_id) {
+            $mentorGroupName = \DB::table('roles')
+                ->where('id', $course->mentor_group_id)
+                ->value('name');
+
+            if ($mentorGroupName) {
+                $fir = $this->getFirFromMentorGroup($mentorGroupName);
+                if ($fir) {
+                    $isLM = \DB::table('leading_mentors')
+                        ->where('user_id', $this->id)
+                        ->where('fir', $fir)
+                        ->exists();
+
+                    if ($isLM) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function canEditTrainingLog(TrainingLog $log): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        // Original mentor can always edit
+        if ($this->id === $log->mentor_id) {
+            return true;
+        }
+
+        // If no course associated, can't edit
+        if (!$log->course_id) {
+            return false;
+        }
+
+        // Check CoT directly with simple query
+        $isCoT = \DB::table('chief_of_trainings')
+            ->where('user_id', $this->id)
+            ->where('course_id', $log->course_id)
+            ->exists();
+
+        if ($isCoT) {
+            return true;
+        }
+
+        // Check LM - get course's FIR first
+        $course = $log->course;
+        if (!$course || !$course->mentor_group_id) {
+            return false;
+        }
+
+        $mentorGroupName = \DB::table('roles')
+            ->where('id', $course->mentor_group_id)
+            ->value('name');
+
+        if (!$mentorGroupName) {
+            return false;
+        }
+
+        $fir = $this->getFirFromMentorGroup($mentorGroupName);
+        if (!$fir) {
+            return false;
+        }
+
+        // Check if user is LM for this FIR
+        return \DB::table('leading_mentors')
+            ->where('user_id', $this->id)
+            ->where('fir', $fir)
+            ->exists();
+    }
+
+    public function canManageEndorsementsFor(Course $course): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        // Check if CoT for this course
+        $isCoT = \DB::table('chief_of_trainings')
+            ->where('user_id', $this->id)
+            ->where('course_id', $course->id)
+            ->exists();
+
+        if ($isCoT) {
+            return true;
+        }
+
+        // Check if LM for this course's FIR
+        if (!$course->mentor_group_id) {
+            return false;
+        }
+
+        $mentorGroupName = \DB::table('roles')
+            ->where('id', $course->mentor_group_id)
+            ->value('name');
+
+        if (!$mentorGroupName) {
+            return false;
+        }
+
+        $fir = $this->getFirFromMentorGroup($mentorGroupName);
+        if (!$fir) {
+            return false;
+        }
+
+        return \DB::table('leading_mentors')
+            ->where('user_id', $this->id)
+            ->where('fir', $fir)
+            ->exists();
+    }
+
+    public function isChiefOfTraining(): bool
+    {
+        return \DB::table('chief_of_trainings')
+            ->where('user_id', $this->id)
+            ->exists();
+    }
+
+    public function isLeadingMentor(): bool
+    {
+        return \DB::table('leading_mentors')
+            ->where('user_id', $this->id)
+            ->exists();
     }
 }

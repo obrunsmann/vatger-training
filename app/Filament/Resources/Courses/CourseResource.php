@@ -13,6 +13,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Filament\Facades\Filament;
 
 class CourseResource extends Resource
 {
@@ -54,5 +55,43 @@ class CourseResource extends Resource
     public static function getNavigationSort(): ?int
     {
         return 1;
+    }
+
+    public static function canViewAny(): bool
+    {
+        $user = auth()->user();
+
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->is_admin || $user->is_superuser) {
+            return true;
+        }
+
+        if ($user->isLeadingMentor()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public static function canEdit(\Illuminate\Database\Eloquent\Model $record): bool
+    {
+        $user = Filament::auth()->user();
+
+        if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        // Leading Mentors can edit courses in their FIR
+        if ($user->isLeadingMentor() && $record->mentorGroup) {
+            $fir = $user->getFirFromMentorGroup($record->mentorGroup->name);
+            if ($fir && $user->leadingMentorFirs()->where('fir', $fir)->exists()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -59,11 +59,12 @@ class TrainingLogPolicy
      */
     public function update(User $user, TrainingLog $log): bool
     {
-        // Only the mentor who created the log or superusers can edit
+        // Superuser/admin always can
         if ($user->is_superuser || $user->is_admin) {
             return true;
         }
 
+        // Original mentor who created the log can edit
         if ($user->id === $log->mentor_id) {
             // Check if user is still a mentor for the course
             if ($log->course) {
@@ -72,7 +73,8 @@ class TrainingLogPolicy
             return true;
         }
 
-        return false;
+        // NEW: Use the canEditTrainingLog method from User model
+        return $user->canEditTrainingLog($log);
     }
 
     /**

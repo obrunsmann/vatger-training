@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Cache;
 use Inertia\Inertia;
 use Inertia\Response;
 use App\Services\ActivityLogger;
+use App\Models\Course;
 
 class MentorOverviewController extends Controller
 {
@@ -17,17 +18,35 @@ class MentorOverviewController extends Controller
         $user = $request->user();
         $lastAccessedCourseId = $request->input('last_course_id');
 
+        // Get courses based on user permissions - UPDATED TO USE NEW PERMISSION SYSTEM
         if ($user->is_superuser || $user->is_admin) {
-            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station'])
+            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
                 ->withCount('activeTrainees')
                 ->get();
         } else {
-            $courses = $user->mentorCourses()
-                ->select(['courses.id', 'courses.name', 'courses.position', 'courses.type', 'courses.solo_station'])
+            // Get accessible course IDs using the new permission system
+            $accessibleCourseIds = $user->getAccessibleCourseIds();
+
+            if (empty($accessibleCourseIds)) {
+                return Inertia::render('training/mentor-overview', [
+                    'courses' => [],
+                    'initialCourseId' => null,
+                    'statistics' => [
+                        'activeTrainees' => 0,
+                        'claimedTrainees' => 0,
+                        'trainingSessions' => 0,
+                        'waitingList' => 0,
+                    ],
+                ]);
+            }
+
+            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
+                ->whereIn('id', $accessibleCourseIds)
                 ->withCount('activeTrainees')
                 ->get();
         }
 
+        // Sort courses (keep existing logic)
         $ctrCourses = $courses->filter(fn($c) => $c->position === 'CTR');
         $nonCtrCourses = $courses->filter(fn($c) => $c->position !== 'CTR');
 
@@ -41,7 +60,41 @@ class MentorOverviewController extends Controller
         $ctrCourses = $ctrCourses->sortBy('name');
         $courses = $nonCtrCourses->concat($ctrCourses)->values();
 
-        $coursesMetadata = $courses->map(function ($course) {
+        // Get permissions in bulk to avoid N+1 queries
+        $courseIds = $courses->pluck('id')->toArray();
+
+        // Get CoT permissions in one query
+        $cotCourseIds = \DB::table('chief_of_trainings')
+            ->where('user_id', $user->id)
+            ->whereIn('course_id', $courseIds)
+            ->pluck('course_id')
+            ->toArray();
+
+        // Get LM FIRs
+        $lmFirs = \DB::table('leading_mentors')
+            ->where('user_id', $user->id)
+            ->pluck('fir')
+            ->toArray();
+
+        // Get mentor group IDs and names for LM check
+        $mentorGroups = \DB::table('roles')
+            ->whereIn('id', $courses->pluck('mentor_group_id')->filter()->unique())
+            ->pluck('name', 'id')
+            ->toArray();
+
+        // Build course metadata with permission flags
+        $coursesMetadata = $courses->map(function ($course) use ($user, $cotCourseIds, $lmFirs, $mentorGroups) {
+            $isCoT = in_array($course->id, $cotCourseIds);
+            $isLM = false;
+
+            if ($course->mentor_group_id && isset($mentorGroups[$course->mentor_group_id])) {
+                $groupName = $mentorGroups[$course->mentor_group_id];
+                $fir = $user->getFirFromMentorGroup($groupName);
+                if ($fir && in_array($fir, $lmFirs)) {
+                    $isLM = true;
+                }
+            }
+
             return [
                 'id' => $course->id,
                 'name' => $course->name,
@@ -51,6 +104,12 @@ class MentorOverviewController extends Controller
                 'activeTrainees' => $course->active_trainees_count,
                 'trainees' => [],
                 'loaded' => false,
+                'permissions' => [
+                    'isChiefOfTraining' => $isCoT,
+                    'isLeadingMentor' => $isLM,
+                    'canEditAllLogs' => $isCoT || $isLM || $user->is_superuser || $user->is_admin,
+                    'canRemoveEndorsements' => $isCoT || $isLM || $user->is_superuser || $user->is_admin,
+                ],
             ];
         });
 
@@ -71,17 +130,12 @@ class MentorOverviewController extends Controller
 
                     $coursesMetadata = $coursesMetadata->map(function ($meta) use ($loadedCourseData) {
                         if ($meta['id'] === $loadedCourseData['id']) {
+                            // Merge permissions from metadata
+                            $loadedCourseData['permissions'] = $meta['permissions'];
                             return $loadedCourseData;
                         }
                         return $meta;
                     });
-
-                    /* \Log::info('Loaded initial course data', [
-                        'course_id' => $loadedCourseData['id'],
-                        'course_name' => $loadedCourseData['name'],
-                        'trainee_count' => count($loadedCourseData['trainees']),
-                        'loaded_flag' => $loadedCourseData['loaded'],
-                    ]); */
                 }
             } catch (\Exception $e) {
                 \Log::error('Failed to load initial course data', [
@@ -91,16 +145,34 @@ class MentorOverviewController extends Controller
             }
         }
 
+        // Calculate statistics
         $totalActiveTrainees = $courses->sum(fn($c) => $c->active_trainees_count);
+
+        $accessibleCourseIds = $courses->pluck('id')->toArray();
+
+        $claimedTrainees = \DB::table('course_trainees')
+            ->whereIn('course_id', $accessibleCourseIds)
+            ->whereNotNull('claimed_by_mentor_id')
+            ->whereNull('completed_at')
+            ->count();
+
+        $trainingSessions = \DB::table('training_logs')
+            ->whereIn('course_id', $accessibleCourseIds)
+            ->where('created_at', '>=', now()->subDays(30))
+            ->count();
+
+        $waitingListCount = \DB::table('waiting_list_entries')
+            ->whereIn('course_id', $accessibleCourseIds)
+            ->count();
 
         return Inertia::render('training/mentor-overview', [
             'courses' => $coursesMetadata->values(),
             'initialCourseId' => $courseToLoadId,
             'statistics' => [
                 'activeTrainees' => $totalActiveTrainees,
-                'claimedTrainees' => 0,
-                'trainingSessions' => 0,
-                'waitingList' => 0,
+                'claimedTrainees' => $claimedTrainees,
+                'trainingSessions' => $trainingSessions,
+                'waitingList' => $waitingListCount,
             ],
         ]);
     }
@@ -108,7 +180,7 @@ class MentorOverviewController extends Controller
     protected function returnWithRefreshedCourse($courseId, $user)
     {
         if ($user->is_superuser || $user->is_admin) {
-            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station'])
+            $courses = Course::select(['id', 'name', 'position', 'type', 'solo_station'])
                 ->withCount('activeTrainees')
                 ->get();
         } else {
@@ -134,7 +206,7 @@ class MentorOverviewController extends Controller
         $coursesMetadata = $courses->map(function ($course) use ($courseId, $user) {
             if ($course->id === $courseId) {
                 try {
-                    $fullCourse = \App\Models\Course::find($courseId);
+                    $fullCourse = Course::find($courseId);
                     if ($fullCourse) {
                         $courseData = $this->loadCourseData($fullCourse, $user);
                         $courseData['loaded'] = true;
@@ -175,13 +247,14 @@ class MentorOverviewController extends Controller
     {
         $user = $request->user();
 
-        if (!$user->isMentor() && !$user->is_superuser) {
+        if (!$user->isMentor() && !$user->is_superuser && !$user->isChiefOfTraining() && !$user->isLeadingMentor()) {
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
         $course = \App\Models\Course::findOrFail($courseId);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        // Use the new permission check
+        if (!$user->canViewCourse($course)) {
             return response()->json(['error' => 'Access denied'], 403);
         }
 
@@ -192,6 +265,7 @@ class MentorOverviewController extends Controller
 
     public function loadCourseData($course, $user): array
     {
+        // Keep all existing caching and data fetching logic
         $allSolos = Cache::remember('vateud_solos', 300, function () {
             try {
                 return collect(app(\App\Services\VatEudService::class)->getSoloEndorsements());
@@ -275,15 +349,45 @@ class MentorOverviewController extends Controller
             return $this->formatTraineeOptimized($trainee, $courseWithTrainees, $user, $solosByVatsimId, $tier1ByVatsimId, $allTrainingLogs, $pivotData);
         });
 
+        // Calculate permissions for this course
+        $isCoT = \DB::table('chief_of_trainings')
+            ->where('user_id', $user->id)
+            ->where('course_id', $course->id)
+            ->exists();
+
+        $isLM = false;
+        if ($courseWithTrainees->mentor_group_id) {
+            $mentorGroupName = \DB::table('roles')
+                ->where('id', $courseWithTrainees->mentor_group_id)
+                ->value('name');
+
+            if ($mentorGroupName) {
+                $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                if ($fir) {
+                    $isLM = \DB::table('leading_mentors')
+                        ->where('user_id', $user->id)
+                        ->where('fir', $fir)
+                        ->exists();
+                }
+            }
+        }
+
         return [
             'id' => $courseWithTrainees->id,
             'name' => $courseWithTrainees->name,
             'position' => $courseWithTrainees->position,
             'type' => $courseWithTrainees->type,
             'soloStation' => $courseWithTrainees->solo_station,
+            'moodleCourseIds' => $courseWithTrainees->moodle_course_ids ?? [],
             'activeTrainees' => $courseWithTrainees->activeTrainees->count(),
             'trainees' => $trainees,
             'loaded' => true,
+            'permissions' => [
+                'isChiefOfTraining' => $isCoT,
+                'isLeadingMentor' => $isLM,
+                'canEditAllLogs' => $isCoT || $isLM || $user->is_superuser || $user->is_admin,
+                'canRemoveEndorsements' => $isCoT || $isLM || $user->is_superuser || $user->is_admin,
+            ],
         ];
     }
 
@@ -304,7 +408,7 @@ class MentorOverviewController extends Controller
         $courseId = $request->input('course_id');
 
         $trainee = \App\Models\User::findOrFail($traineeId);
-        $course = \App\Models\Course::findOrFail($courseId);
+        $course = Course::findOrFail($courseId);
 
         if (empty($course->moodle_course_ids)) {
             return response()->json([
@@ -490,9 +594,9 @@ class MentorOverviewController extends Controller
             return response()->json(['error' => 'Access denied'], 403);
         }
 
-        $course = \App\Models\Course::findOrFail($courseId);
+        $course = Course::findOrFail($courseId);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return response()->json(['error' => 'Access denied'], 403);
         }
 
@@ -521,10 +625,10 @@ class MentorOverviewController extends Controller
             'remark' => 'nullable|string|max:1000',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -566,10 +670,10 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -612,10 +716,10 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot claim trainees for this course']);
         }
 
@@ -666,11 +770,11 @@ class MentorOverviewController extends Controller
             'mentor_id' => 'required|integer|exists:users,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
         $newMentor = \App\Models\User::findOrFail($request->mentor_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot assign trainees for this course']);
         }
 
@@ -725,10 +829,10 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot unclaim trainees for this course']);
         }
 
@@ -773,10 +877,10 @@ class MentorOverviewController extends Controller
             'user_id' => 'required|integer|exists:users,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $mentorToAdd = \App\Models\User::findOrFail($request->user_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -819,10 +923,10 @@ class MentorOverviewController extends Controller
             'mentor_id' => 'required|integer|exists:users,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $mentorToRemove = \App\Models\User::findOrFail($request->mentor_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -873,10 +977,10 @@ class MentorOverviewController extends Controller
             'user_id' => 'required|integer|exists:users,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->user_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -982,14 +1086,14 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
         if (!in_array($course->type, ['GST', 'EDMT']) && !($course->type === 'RTG' && $course->position === 'GND')) {
             return back()->withErrors(['error' => 'This course does not support endorsements']);
         }
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You are not a mentor for this course']);
         }
 
@@ -1078,10 +1182,10 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -1139,9 +1243,9 @@ class MentorOverviewController extends Controller
             return response()->json(['error' => 'Access denied'], 403);
         }
 
-        $course = \App\Models\Course::findOrFail($courseId);
+        $course = Course::findOrFail($courseId);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return response()->json(['error' => 'Access denied'], 403);
         }
 
@@ -1195,10 +1299,10 @@ class MentorOverviewController extends Controller
             'course_id' => 'required|integer|exists:courses,id',
         ]);
 
-        $course = \App\Models\Course::findOrFail($request->course_id);
+        $course = Course::findOrFail($request->course_id);
         $trainee = \App\Models\User::findOrFail($request->trainee_id);
 
-        if (!$user->is_superuser && !$user->is_admin && !$user->mentorCourses()->where('courses.id', $course->id)->exists()) {
+        if (!$user->canViewCourse($course)) {
             return back()->withErrors(['error' => 'You cannot modify this course']);
         }
 
@@ -1290,7 +1394,7 @@ class MentorOverviewController extends Controller
         }
     }
 
-    protected function addFIRFamiliarisations(\App\Models\User $trainee, \App\Models\Course $course, \App\Models\User $mentor): void
+    protected function addFIRFamiliarisations(\App\Models\User $trainee, Course $course, \App\Models\User $mentor): void
     {
         try {
             if (!$course->mentor_group_id) {
@@ -1344,7 +1448,7 @@ class MentorOverviewController extends Controller
         }
     }
 
-    protected function addSingleFamiliarisation(\App\Models\User $trainee, \App\Models\Course $course, \App\Models\User $mentor): void
+    protected function addSingleFamiliarisation(\App\Models\User $trainee, Course $course, \App\Models\User $mentor): void
     {
         try {
             $familiarisation = \App\Models\Familiarisation::firstOrCreate([
