@@ -391,6 +391,7 @@ export function TraineeDataTable({ trainees, course, onRemarkClick, onClaimClick
                                             route('training-logs.create', {
                                                 traineeId: trainee.id,
                                                 courseId: course.id,
+                                                continue: true,
                                             }),
                                         );
                                     }}
