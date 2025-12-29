@@ -18,13 +18,11 @@ class MentorOverviewController extends Controller
         $user = $request->user();
         $lastAccessedCourseId = $request->input('last_course_id');
 
-        // Get courses based on user permissions - UPDATED TO USE NEW PERMISSION SYSTEM
         if ($user->is_superuser || $user->is_admin) {
-            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
+            $courses = Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
                 ->withCount('activeTrainees')
                 ->get();
         } else {
-            // Get accessible course IDs using the new permission system
             $accessibleCourseIds = $user->getAccessibleCourseIds();
 
             if (empty($accessibleCourseIds)) {
@@ -40,13 +38,12 @@ class MentorOverviewController extends Controller
                 ]);
             }
 
-            $courses = \App\Models\Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
+            $courses = Course::select(['id', 'name', 'position', 'type', 'solo_station', 'mentor_group_id'])
                 ->whereIn('id', $accessibleCourseIds)
                 ->withCount('activeTrainees')
                 ->get();
         }
 
-        // Sort courses (keep existing logic)
         $ctrCourses = $courses->filter(fn($c) => $c->position === 'CTR');
         $nonCtrCourses = $courses->filter(fn($c) => $c->position !== 'CTR');
 
@@ -60,29 +57,24 @@ class MentorOverviewController extends Controller
         $ctrCourses = $ctrCourses->sortBy('name');
         $courses = $nonCtrCourses->concat($ctrCourses)->values();
 
-        // Get permissions in bulk to avoid N+1 queries
         $courseIds = $courses->pluck('id')->toArray();
 
-        // Get CoT permissions in one query
         $cotCourseIds = \DB::table('chief_of_trainings')
             ->where('user_id', $user->id)
             ->whereIn('course_id', $courseIds)
             ->pluck('course_id')
             ->toArray();
 
-        // Get LM FIRs
         $lmFirs = \DB::table('leading_mentors')
             ->where('user_id', $user->id)
             ->pluck('fir')
             ->toArray();
 
-        // Get mentor group IDs and names for LM check
         $mentorGroups = \DB::table('roles')
             ->whereIn('id', $courses->pluck('mentor_group_id')->filter()->unique())
             ->pluck('name', 'id')
             ->toArray();
 
-        // Build course metadata with permission flags
         $coursesMetadata = $courses->map(function ($course) use ($user, $cotCourseIds, $lmFirs, $mentorGroups) {
             $isCoT = in_array($course->id, $cotCourseIds);
             $isLM = false;
@@ -123,14 +115,13 @@ class MentorOverviewController extends Controller
 
         if ($courseToLoadId) {
             try {
-                $courseToLoad = \App\Models\Course::find($courseToLoadId);
+                $courseToLoad = Course::find($courseToLoadId);
                 if ($courseToLoad) {
                     $loadedCourseData = $this->loadCourseData($courseToLoad, $user);
                     $loadedCourseData['loaded'] = true;
 
                     $coursesMetadata = $coursesMetadata->map(function ($meta) use ($loadedCourseData) {
                         if ($meta['id'] === $loadedCourseData['id']) {
-                            // Merge permissions from metadata
                             $loadedCourseData['permissions'] = $meta['permissions'];
                             return $loadedCourseData;
                         }
@@ -145,7 +136,6 @@ class MentorOverviewController extends Controller
             }
         }
 
-        // Calculate statistics
         $totalActiveTrainees = $courses->sum(fn($c) => $c->active_trainees_count);
 
         $accessibleCourseIds = $courses->pluck('id')->toArray();
@@ -251,9 +241,8 @@ class MentorOverviewController extends Controller
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
-        $course = \App\Models\Course::findOrFail($courseId);
+        $course = Course::findOrFail($courseId);
 
-        // Use the new permission check
         if (!$user->canViewCourse($course)) {
             return response()->json(['error' => 'Access denied'], 403);
         }
@@ -265,7 +254,6 @@ class MentorOverviewController extends Controller
 
     public function loadCourseData($course, $user): array
     {
-        // Keep all existing caching and data fetching logic
         $allSolos = Cache::remember('vateud_solos', 300, function () {
             try {
                 return collect(app(\App\Services\VatEudService::class)->getSoloEndorsements());
@@ -287,7 +275,7 @@ class MentorOverviewController extends Controller
         $solosByVatsimId = $allSolos->groupBy('user_cid');
         $tier1ByVatsimId = $allTier1->groupBy('user_cid');
 
-        $courseWithTrainees = \App\Models\Course::with([
+        $courseWithTrainees = Course::with([
             'activeTrainees' => function ($query) {
                 $query->orderByRaw("
                 CASE 
@@ -349,7 +337,6 @@ class MentorOverviewController extends Controller
             return $this->formatTraineeOptimized($trainee, $courseWithTrainees, $user, $solosByVatsimId, $tier1ByVatsimId, $allTrainingLogs, $pivotData);
         });
 
-        // Calculate permissions for this course
         $isCoT = \DB::table('chief_of_trainings')
             ->where('user_id', $user->id)
             ->where('course_id', $course->id)

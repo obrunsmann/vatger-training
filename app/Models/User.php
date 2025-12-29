@@ -388,6 +388,21 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
+        // First, check if there's a course for this position and if user is CoT or LM for it
+        $course = $this->findCourseByPosition($position);
+        if ($course) {
+            // Check if user is Chief of Training for this course
+            if ($this->isChiefOfTrainingForCourse($course->id)) {
+                return true;
+            }
+
+            // Check if user can manage endorsements for this course (includes LM check)
+            if ($this->canManageEndorsementsFor($course)) {
+                return true;
+            }
+        }
+
+        // Check if user is a regular mentor for courses that match this position
         $allowedPositions = $this->mentorCourses
             ->flatMap(function (Course $course) {
                 $airport = $course->airport_icao;
@@ -403,14 +418,44 @@ class User extends Authenticatable implements FilamentUser
             ->values();
 
         if ($allowedPositions->contains($position)) {
-            return true;
+            return false; // Regular mentors cannot remove endorsements
         }
 
-        $course = $this->findCourseByPosition($position);
-        if ($course) {
-            return $this->canManageEndorsementsFor($course);
+        // Finally, check if Leading Mentor FIR matching applies (for positions without courses)
+        $lmFirs = $this->getLeadingMentorFirs();
+        if (!empty($lmFirs)) {
+            return $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
         }
 
+        return false;
+    }
+
+    private function endorsementMatchesLeadingMentorFir(string $position, array $lmFirs): bool
+    {
+        $positionUpper = strtoupper($position);
+
+        foreach ($lmFirs as $fir) {
+            $firUpper = strtoupper($fir);
+
+            if (str_contains($positionUpper, $firUpper)) {
+                return true;
+            }
+
+            $firNameMap = [
+                'EDWW' => ['BREMEN', 'EDWW'],
+                'EDGG' => ['LANGEN', 'EDGG'],
+                'EDMM' => ['MÜNCHEN', 'MUNICH', 'EDMM'],
+            ];
+
+            if (isset($firNameMap[$firUpper])) {
+                foreach ($firNameMap[$firUpper] as $keyword) {
+                    if (str_contains($positionUpper, $keyword)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        
         return false;
     }
 
