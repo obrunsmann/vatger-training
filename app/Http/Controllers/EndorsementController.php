@@ -86,7 +86,7 @@ class EndorsementController extends Controller
 
         if ($user->is_superuser || $user->is_admin) {
             $allowedPositions = null;
-            $canRemoveAny = true;
+            $canRemovePositions = null;
         } else {
             $mentorPositions = $user->mentorCourses
                 ->flatMap(function (Course $course) {
@@ -106,11 +106,11 @@ class EndorsementController extends Controller
                 ->flatMap(function (Course $course) {
                     $airport = $course->airport_icao;
                     $position = $course->position;
-
+    
                     if ($position === 'GND') {
                         return ["{$airport}_GNDDEL"];
                     }
-
+    
                     return ["{$airport}_{$position}"];
                 })
                 ->unique()
@@ -118,27 +118,29 @@ class EndorsementController extends Controller
 
             $lmPositions = collect([]);
             $lmFirs = $user->leadingMentorFirs()->pluck('fir');
-    
+
 
             if ($lmFirs->isNotEmpty()) {
-                $lmCourses = Course::whereHas('mentorGroup', function ($query) use ($lmFirs) {
-                    foreach ($lmFirs as $fir) {
-                        $query->orWhere('name', 'LIKE', "%{$fir}%");
-                    }
-                })->get();
+                foreach ($lmFirs as $fir) {
+                    $firCourses = Course::whereHas('mentorGroup', function ($query) use ($fir) {
+                        $query->where('name', 'LIKE', "%{$fir}%");
+                    })->get();
 
-                $lmPositions = $lmCourses->flatMap(function (Course $course) {
-                    $airport = $course->airport_icao;
-                    $position = $course->position;
+                    $firPositions = $firCourses->flatMap(function (Course $course) {
+                        $airport = $course->airport_icao;
+                        $position = $course->position;
 
-                    if ($position === 'GND') {
-                        return ["{$airport}_GNDDEL"];
-                    }
+                        if ($position === 'GND') {
+                            return ["{$airport}_GNDDEL"];
+                        }
 
-                    return ["{$airport}_{$position}"];
-                })
-                    ->unique()
-                    ->values();
+                        return ["{$airport}_{$position}"];
+                    });
+
+                    $lmPositions = $lmPositions->merge($firPositions);
+                }
+
+                $lmPositions = $lmPositions->unique()->values();
             }
 
             $allowedPositions = $mentorPositions
@@ -151,8 +153,6 @@ class EndorsementController extends Controller
                 ->merge($lmPositions)
                 ->unique()
                 ->values();
-
-            $canRemoveAny = $canRemovePositions->isNotEmpty();
         }
 
         $allTier1 = $this->vatEudService->getTier1Endorsements();
@@ -209,6 +209,11 @@ class EndorsementController extends Controller
                 if ($user->is_superuser || $user->is_admin) {
                     return true;
                 }
+
+                if ($allowedPositions === null || $allowedPositions->isEmpty()) {
+                    return false;
+                }
+
                 return $allowedPositions->contains($endorsement['position']);
             })
             ->values();
@@ -229,8 +234,8 @@ class EndorsementController extends Controller
         return Inertia::render('endorsements/manage', [
             'endorsementGroups' => $endorsementsByPosition,
             'userPermissions' => [
-                'canRemoveForPositions' => $user->is_superuser || $user->is_admin ? null : $canRemovePositions->toArray(),
-                'canRemoveAny' => $canRemoveAny,
+                'canRemoveForPositions' => ($user->is_superuser || $user->is_admin) ? null : $canRemovePositions->toArray(),
+                'canRemoveAny' => ($user->is_superuser || $user->is_admin) || ($canRemovePositions && $canRemovePositions->isNotEmpty()),
             ],
         ]);
     }
