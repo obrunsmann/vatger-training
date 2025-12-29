@@ -4,6 +4,8 @@ namespace App\Filament\Resources\ChiefOfTrainings\Schemas;
 
 use Filament\Schemas\Schema;
 use Filament\Forms;
+use Filament\Facades\Filament;
+use Illuminate\Database\Eloquent\Builder;
 
 class ChiefOfTrainingForm
 {
@@ -21,7 +23,43 @@ class ChiefOfTrainingForm
                 
                 Forms\Components\Select::make('course_id')
                     ->label('Course')
-                    ->relationship('course', 'name')
+                    ->relationship(
+                        name: 'course',
+                        titleAttribute: 'name',
+                        modifyQueryUsing: function (Builder $query) {
+                            $user = Filament::auth()->user();
+
+                            if (!$user) {
+                                return $query->whereRaw('1 = 0');
+                            }
+
+                            if ($user->is_superuser || $user->is_admin) {
+                                return $query;
+                            }
+
+                            if ($user->isLeadingMentor()) {
+                                $lmFirs = $user->getLeadingMentorFirs();
+
+                                if (empty($lmFirs)) {
+                                    return $query->whereRaw('1 = 0');
+                                }
+
+                                return $query->whereHas('mentorGroup', function ($q) use ($lmFirs) {
+                                    $q->where(function ($q2) use ($lmFirs) {
+                                        foreach ($lmFirs as $fir) {
+                                            $q2->orWhere('name', 'LIKE', "%{$fir}%");
+                                        }
+                                    });
+                                });
+                            }
+
+                            return $query;
+                        }
+                    )
+                    ->getOptionLabelFromRecordUsing(
+                        fn($record) =>
+                        $record->name . ' (' . $record->type . ' - ' . $record->position . ')'
+                    )
                     ->searchable()
                     ->required()
                     ->helperText('Select the course this user will manage'),

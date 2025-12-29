@@ -95,7 +95,7 @@ class PermissionResource extends Resource
 
     public static function getNavigationGroup(): ?string
     {
-        return 'Users & Access';
+        return 'Permissions';
     }
 
     public static function getNavigationSort(): ?int

@@ -14,6 +14,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Filament\Facades\Filament;
+use Illuminate\Database\Eloquent\Builder;
 
 class ChiefOfTrainingResource extends Resource
 {
@@ -64,6 +65,10 @@ class ChiefOfTrainingResource extends Resource
             return true;
         }
 
+        if ($user->isLeadingMentor()) {
+            return true;
+        }
+
         return $user->canAccessAdminResource('chief_of_trainings');
     }
 
@@ -76,6 +81,10 @@ class ChiefOfTrainingResource extends Resource
         }
 
         if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        if ($user->isLeadingMentor()) {
             return true;
         }
 
@@ -94,6 +103,20 @@ class ChiefOfTrainingResource extends Resource
             return true;
         }
 
+        if ($user->isLeadingMentor() && $record->course) {
+            $course = $record->course;
+            if ($course->mentor_group_id) {
+                $mentorGroupName = $course->mentorGroup?->name;
+                if ($mentorGroupName) {
+                    $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                    if ($fir && $user->isLeadingMentorForFir($fir)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         return $user->canEditAdminResource('chief_of_trainings');
     }
 
@@ -105,6 +128,60 @@ class ChiefOfTrainingResource extends Resource
             return false;
         }
 
-        return $user->is_superuser || $user->is_admin;
+        if ($user->is_superuser || $user->is_admin) {
+            return true;
+        }
+
+        if ($user->isLeadingMentor() && $record->course) {
+            $course = $record->course;
+            if ($course->mentor_group_id) {
+                $mentorGroupName = $course->mentorGroup?->name;
+                if ($mentorGroupName) {
+                    $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                    if ($fir && $user->isLeadingMentorForFir($fir)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        return false;
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        $query = parent::getEloquentQuery()->with(['course.mentorGroup']);
+        $user = Filament::auth()->user();
+
+        if (!$user) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        if ($user->is_superuser || $user->is_admin) {
+            return $query;
+        }
+
+        if ($user->isLeadingMentor()) {
+            $lmFirs = $user->getLeadingMentorFirs();
+
+            if (empty($lmFirs)) {
+                return $query->whereRaw('1 = 0');
+            }
+
+            return $query->whereHas('course.mentorGroup', function ($q) use ($lmFirs) {
+                $q->where(function ($q2) use ($lmFirs) {
+                    foreach ($lmFirs as $fir) {
+                        $q2->orWhere('name', 'LIKE', "%{$fir}%");
+                    }
+                });
+            });
+        }
+
+        if ($user->canAccessAdminResource('chief_of_trainings')) {
+            return $query;
+        }
+
+        return $query->whereRaw('1 = 0');
     }
 }
