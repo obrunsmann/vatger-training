@@ -108,6 +108,18 @@ const adminSection = {
     ] as NavItem[],
 };
 
+const lmSection = {
+    label: 'Management',
+    items: [
+        {
+            title: 'Edit Courses',
+            href: '/admin',
+            icon: Database,
+            external: true,
+        },
+    ],
+};
+
 const footerNavItems: NavItem[] = [
     {
         title: 'GDPR',
@@ -158,6 +170,7 @@ export function AppSidebar() {
     const { auth } = usePage<SharedData>().props;
     const isMentor = auth.user?.is_mentor || auth.user?.is_superuser || auth.user?.is_admin;
     const isSuperuser = auth.user?.is_superuser || auth.user?.is_admin;
+    const isLeadingMentor = auth.user?.is_leading_mentor;
     const [searchModalOpen, setSearchModalOpen] = useState(false);
 
     return (
@@ -203,6 +216,12 @@ export function AppSidebar() {
                     {isMentor === true && (
                         <>
                             <NavSection section={atdSection} />
+                        </>
+                    )}
+
+                    {isLeadingMentor === true && (
+                        <>
+                            <NavSection section={lmSection} />
                         </>
                     )}
 

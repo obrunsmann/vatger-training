@@ -39,6 +39,15 @@ trait LogsActivity
         $old = $action === 'updated' ? $this->getOriginal() : [];
         $new = $action !== 'deleted' ? $this->getAttributes() : [];
 
+        if (property_exists($this, 'loggedAttributes') && $action === 'updated') {
+            $old = array_intersect_key($old, array_flip($this->loggedAttributes));
+            $new = array_intersect_key($new, array_flip($this->loggedAttributes));
+
+            if (empty(array_diff_assoc($new, $old))) {
+                return;
+            }
+        }
+
         ActivityLogger::logModelChange(
             $this->getActivityAction($action),
             $this,
