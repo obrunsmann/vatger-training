@@ -149,7 +149,7 @@ class WaitingListService
             ];
 
             $response = \Http::withHeaders($headers)
-                ->post($apiBaseUrl + "/user/{$entry->user->vatsim_id}/send_notification", $data);
+                ->post($apiBaseUrl . "/user/{$entry->user->vatsim_id}/send_notification", $data);
 
             if (!$response->successful()) {
                 throw new \Exception("Failed to send notification: " . $response->body());
