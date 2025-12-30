@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Users\Schemas;
 use Filament\Schemas\Schema;
 use Filament\Forms;
 use Filament\Schemas\Components\Section;
+use App\Models\Permission;
 
 class UserForm
 {
@@ -82,7 +83,7 @@ class UserForm
                             ->suffix('days')
                     ])->columns(2),
 
-                Section::make('Permissions')
+                Section::make('System Permissions')
                     ->schema([
                         Forms\Components\Toggle::make('is_staff')
                             ->label('Staff Member')
@@ -95,14 +96,40 @@ class UserForm
                         Forms\Components\Toggle::make('is_admin')
                             ->label('Admin Account')
                             ->helperText('Non-VATSIM admin account for development/emergency access'),
+                    ])->columns(3),
 
+                Section::make('Roles & Permissions')
+                    ->schema([
                         Forms\Components\Select::make('roles')
                             ->label('Roles')
                             ->relationship('roles', 'name')
                             ->multiple()
                             ->preload()
                             ->helperText('Assign mentor or leadership roles'),
-                    ])->columns(2),
+
+                        Forms\Components\CheckboxList::make('permission_ids')
+                            ->label('Direct Permissions')
+                            ->helperText('Grant specific permissions to this user (in addition to role-based permissions)')
+                            ->options(function () {
+                                return Permission::query()
+                                    ->orderBy('group')
+                                    ->orderBy('name')
+                                    ->get()
+                                    ->mapWithKeys(function ($permission) {
+                                        $label = $permission->group
+                                            ? "[{$permission->group}] {$permission->name}"
+                                            : $permission->name;
+                                        return [$permission->id => $label];
+                                    });
+                            })
+                            ->columns(2)
+                            ->gridDirection('row')
+                            ->afterStateHydrated(function ($component, $state, $record) {
+                                if ($record) {
+                                    $component->state($record->permissions->pluck('id')->toArray());
+                                }
+                            }),
+                    ])->columns(1),
             ]);
     }
 }

@@ -52,6 +52,10 @@ interface EndorsementGroupData {
 
 interface PageProps {
     endorsementGroups: EndorsementGroupData[];
+    userPermissions: {
+        canRemoveForPositions: string[] | null;
+        canRemoveAny: boolean;
+    };
 }
 
 const formatRemovalDate = (removalDate: string | null, removalDays: number) => {
@@ -79,7 +83,7 @@ const getEndorsementState = (endorsement: EndorsementData): 'active' | 'low-acti
     return 'active';
 };
 
-export default function ManageEndorsements({ endorsementGroups: initialGroups }: PageProps) {
+export default function ManageEndorsements({ endorsementGroups: initialGroups, userPermissions }: PageProps) {
     const [endorsementGroups, setEndorsementGroups] = useState(initialGroups);
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
@@ -90,7 +94,18 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
     const [isProcessing, setIsProcessing] = useState(false);
     const [showActiveEndorsements, setShowActiveEndorsements] = useState(false);
 
-    // Update endorsement in state
+    const canRemoveForPosition = (position: string): boolean => {
+        if (userPermissions.canRemoveForPositions === null) {
+            return true;
+        }
+
+        if (userPermissions.canRemoveForPositions.includes(position)) {
+            return true;
+        }
+
+        return false;
+    };
+
     const updateEndorsementInState = useCallback((endorsementId: number, updates: Partial<EndorsementData>) => {
         setEndorsementGroups((prevGroups) =>
             prevGroups.map((group) => ({
@@ -101,7 +116,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
             })),
         );
 
-        // Also update selectedGroup if it's open
         setSelectedGroup((prevGroup) => {
             if (!prevGroup) return null;
             return {
@@ -140,7 +154,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                 return matchesSearch && matchesStatus;
             })
             .filter((group) => {
-                // Only show groups that have actionable endorsements
                 const stats = getGroupStats(group.endorsements);
                 return stats.actionable > 0;
             });
@@ -167,41 +180,78 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
             status: 'removal',
         };
 
-        updateEndorsementInState(selectedEndorsement.endorsementId, optimisticUpdates);
+        const savedEndorsement = selectedEndorsement;
+        const originalStatus = selectedEndorsement.status;
+
+        updateEndorsementInState(savedEndorsement.endorsementId, optimisticUpdates);
 
         setIsRemovalDialogOpen(false);
-        const savedEndorsement = selectedEndorsement;
         setSelectedEndorsement(null);
 
-        try {
-            await new Promise<void>((resolve, reject) => {
-                router.delete(`/endorsements/tier1/${savedEndorsement.endorsementId}/remove`, {
-                    preserveState: true,
-                    preserveScroll: true,
-                    onSuccess: () => {
-                        toast.success('Endorsement marked for removal', {
-                            description: `${savedEndorsement.position} for ${savedEndorsement.userName} will be removed in ${removalWarningDays} days`,
-                        });
-                        resolve();
-                    },
-                    onError: (errors) => {
-                        updateEndorsementInState(savedEndorsement.endorsementId, {
-                            removalDate: null,
-                            removalDays: 0,
-                            status: savedEndorsement.status,
-                        });
+        router.delete(`/endorsements/tier1/${savedEndorsement.endorsementId}/remove`, {
+            preserveScroll: true,
+            onSuccess: (page) => {
+                const flashMessage = (page.props as any).flash;
 
-                        const errorMessage = Object.values(errors).flat()[0] || 'Failed to mark for removal';
-                        toast.error(typeof errorMessage === 'string' ? errorMessage : 'Failed to mark for removal');
-                        reject(new Error('Failed'));
-                    },
+                if (flashMessage?.error) {
+                    console.log('Error from backend:', flashMessage.error);
+                    toast.error('Failed to mark for removal', {
+                        description: flashMessage.error,
+                        duration: 6000,
+                    });
+                } else if (flashMessage?.success) {
+                    console.log('Success from backend:', flashMessage.success);
+                    toast.success('Endorsement marked for removal', {
+                        description: `${savedEndorsement.position} for ${savedEndorsement.userName} will be removed in ${removalWarningDays} days`,
+                        duration: 4000,
+                    });
+                } else {
+                    console.warn('No flash message received. Flash object:', flashMessage);
+                    toast.success('Endorsement marked for removal', {
+                        description: `${savedEndorsement.position} for ${savedEndorsement.userName} will be removed in ${removalWarningDays} days`,
+                        duration: 4000,
+                    });
+                }
+
+                setIsProcessing(false);
+            },
+            onError: (errors) => {
+                console.error('Endorsement removal error:', errors);
+
+                updateEndorsementInState(savedEndorsement.endorsementId, {
+                    removalDate: null,
+                    removalDays: 0,
+                    status: originalStatus,
                 });
-            });
-        } catch (error) {
-            console.error('Error removing endorsement:', error);
-        } finally {
-            setIsProcessing(false);
-        }
+
+                let errorMessage = 'An unexpected error occurred. Please try again.';
+
+                if (errors && typeof errors === 'object') {
+                    const errorValues = Object.values(errors);
+                    if (errorValues.length > 0) {
+                        const firstError = errorValues[0];
+                        if (typeof firstError === 'string') {
+                            errorMessage = firstError;
+                        } else if (Array.isArray(firstError)) {
+                            const errorArray = firstError as unknown[];
+                            if (errorArray.length > 0 && typeof errorArray[0] === 'string') {
+                                errorMessage = errorArray[0];
+                            }
+                        }
+                    }
+                }
+
+                toast.error('Failed to mark for removal', {
+                    description: errorMessage,
+                    duration: 6000,
+                });
+
+                setIsProcessing(false);
+            },
+            onFinish: () => {
+                setIsProcessing(false);
+            },
+        });
     };
 
     const openRemovalDialog = (endorsement: EndorsementData) => {
@@ -226,7 +276,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
         <AppLayout breadcrumbs={breadcrumbs}>
             <Head title="Manage Endorsements" />
             <div className="flex h-full flex-1 flex-col gap-4 overflow-x-auto rounded-xl p-4">
-                {/* Filters */}
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="relative min-w-[300px] flex-1">
                         <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -257,7 +306,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                     </Tabs>
                 </div>
 
-                {/* Endorsement Group Cards Grid */}
                 {filteredGroups.length > 0 ? (
                     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                         {filteredGroups.map((group) => {
@@ -321,7 +369,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                     </Card>
                 )}
             </div>
-            {/* Position Details Modal */}
             <Dialog open={isGroupDialogOpen} onOpenChange={setIsGroupDialogOpen}>
                 <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[90vw] lg:max-w-[1000px]">
                     <DialogHeader>
@@ -338,7 +385,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                         </DialogDescription>
                     </DialogHeader>
 
-                    {/* Toggle for showing active endorsements */}
                     <div className="flex items-center justify-between rounded-lg border bg-muted/50 p-4">
                         <div className="space-y-0.5">
                             <Label htmlFor="show-active" className="text-sm font-medium">
@@ -364,6 +410,7 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                                     {filteredDetailEndorsements.map((endorsement) => {
                                         const removalInfo = formatRemovalDate(endorsement.removalDate, endorsement.removalDays);
                                         const state = getEndorsementState(endorsement);
+                                        const canRemove = canRemoveForPosition(selectedGroup?.position ?? '');
 
                                         return (
                                             <TableRow key={endorsement.id} className={cn(state === 'in-removal' && 'bg-red-50 dark:bg-red-950/20')}>
@@ -432,7 +479,9 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                                                                         size="sm"
                                                                         variant="destructive"
                                                                         onClick={() => openRemovalDialog(endorsement)}
-                                                                        disabled={state === 'in-removal' || state === 'active' || isProcessing}
+                                                                        disabled={
+                                                                            state === 'in-removal' || state === 'active' || isProcessing || !canRemove
+                                                                        }
                                                                     >
                                                                         <AlertTriangle className="mr-1 h-4 w-4" />
                                                                         Mark for Removal
@@ -448,6 +497,14 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                                                             {state === 'active' && (
                                                                 <TooltipContent>
                                                                     <p>Endorsement is active - cannot mark for removal</p>
+                                                                </TooltipContent>
+                                                            )}
+                                                            {!canRemove && state !== 'in-removal' && state !== 'active' && (
+                                                                <TooltipContent>
+                                                                    <p>You don't have permission to remove endorsements for this position</p>
+                                                                    <p className="mt-1 text-xs">
+                                                                        Only Chief of Training or Leading Mentor can remove endorsements
+                                                                    </p>
                                                                 </TooltipContent>
                                                             )}
                                                         </Tooltip>
@@ -468,7 +525,6 @@ export default function ManageEndorsements({ endorsementGroups: initialGroups }:
                     )}
                 </DialogContent>
             </Dialog>
-            {/* Removal Confirmation Dialog */}
             <Dialog open={isRemovalDialogOpen} onOpenChange={setIsRemovalDialogOpen}>
                 <DialogContent>
                     <DialogHeader>

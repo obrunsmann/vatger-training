@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Filament\Models\Contracts\FilamentUser;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Filament\Panel;
@@ -13,11 +14,6 @@ class User extends Authenticatable implements FilamentUser
 {
     use HasFactory, Notifiable;
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
     protected $fillable = [
         'vatsim_id',
         'first_name',
@@ -33,21 +29,11 @@ class User extends Authenticatable implements FilamentUser
         'solo_days_used',
     ];
 
-    /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
-     */
     protected $hidden = [
         'password',
         'remember_token',
     ];
 
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
     protected $casts = [
         'last_rating_change' => 'datetime',
         'is_staff' => 'boolean',
@@ -60,74 +46,54 @@ class User extends Authenticatable implements FilamentUser
         'solo_days_used' => 'integer',
     ];
 
-    /**
-     * Get the route key for the model.
-     * This makes the model use vatsim_id for route model binding instead of id
-     */
+    private $permissionCache = null;
+    private $cotCourseIdsCache = null;
+    private $lmFirsCache = null;
+
     public function getRouteKeyName()
     {
         return 'vatsim_id';
     }
 
-    /**
-     * Get the user's full name.
-     */
     public function getFullNameAttribute(): string
     {
         return "{$this->first_name} {$this->last_name}";
     }
 
-    /**
-     * Get the name attribute for compatibility
-     */
     public function getNameAttribute(): string
     {
         return $this->full_name;
     }
 
-    /**
-     * Check if user is a mentor (has any mentor role)
-     */
     public function isMentor(): bool
     {
         return $this->hasAnyRole(['EDGG Mentor', 'EDMM Mentor', 'EDWW Mentor', 'ATD Leitung', 'VATGER Leitung']);
     }
 
-    /**
-     * Check if user is a superuser
-     */
     public function isSuperuser(): bool
     {
         return $this->is_superuser === true || $this->is_admin === true;
     }
 
-    /**
-     * Check if user is ATD or VATGER leadership
-     */
     public function isLeadership(): bool
     {
         return $this->hasAnyRole(['ATD Leitung', 'VATGER Leitung']);
     }
 
-    /**
-     * Check if user has any of the given roles
-     */
     public function hasAnyRole(array $roles): bool
     {
-        return $this->roles()->whereIn('name', $roles)->exists();
+        if (!$this->relationLoaded('roles')) {
+            $this->load('roles');
+        }
+
+        return $this->roles->whereIn('name', $roles)->isNotEmpty();
     }
 
-    /**
-     * Many-to-many relationship with roles
-     */
     public function roles()
     {
         return $this->belongsToMany(Role::class, 'user_roles');
     }
 
-    /**
-     * Scope to filter mentors
-     */
     public function scopeMentors($query)
     {
         return $query->whereHas('roles', function ($q) {
@@ -135,9 +101,6 @@ class User extends Authenticatable implements FilamentUser
         });
     }
 
-    /**
-     * Scope to filter leadership
-     */
     public function scopeLeadership($query)
     {
         return $query->whereHas('roles', function ($q) {
@@ -145,49 +108,31 @@ class User extends Authenticatable implements FilamentUser
         });
     }
 
-    /**
-     * Check if user is an admin account (for development/emergency access)
-     */
     public function isAdmin(): bool
     {
         return $this->is_admin === true;
     }
 
-    /**
-     * Check if user is a VATSIM user (has vatsim_id)
-     */
     public function isVatsimUser(): bool
     {
         return !empty($this->vatsim_id);
     }
 
-    /**
-     * Scope to get only admin accounts
-     */
     public function scopeAdmins($query)
     {
         return $query->where('is_admin', true);
     }
 
-    /**
-     * Scope to get only VATSIM users
-     */
     public function scopeVatsimUsers($query)
     {
         return $query->whereNotNull('vatsim_id');
     }
 
-    /**
-     * Get user's endorsement activities
-     */
     public function endorsementActivities()
     {
         return $this->hasMany(EndorsementActivity::class, 'vatsim_id', 'vatsim_id');
     }
 
-    /**
-     * Check if user has any active Tier 1 endorsements
-     */
     public function hasActiveTier1Endorsements(): bool
     {
         if (!$this->isVatsimUser()) {
@@ -199,9 +144,6 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
-    /**
-     * Get user's endorsement summary
-     */
     public function getEndorsementSummary(): array
     {
         if (!$this->isVatsimUser()) {
@@ -219,19 +161,14 @@ class User extends Authenticatable implements FilamentUser
             ->where('activity_minutes', '<', $minRequiredMinutes)
             ->count();
 
-        // Note: Tier 2 and Solo counts would need to be fetched from VatEUD
-        // This is a simplified version for the model
         return [
             'tier1_count' => $tier1Count,
-            'tier2_count' => 0, // Would need VatEUD service call
-            'solo_count' => 0,  // Would need VatEUD service call
+            'tier2_count' => 0,
+            'solo_count' => 0,
             'low_activity_count' => $lowActivityCount,
         ];
     }
 
-    /**
-     * Check if user needs attention for endorsements (low activity, removal warnings, etc.)
-     */
     public function needsEndorsementAttention(): bool
     {
         if (!$this->isVatsimUser()) {
@@ -247,9 +184,6 @@ class User extends Authenticatable implements FilamentUser
             ->exists();
     }
 
-    /**
-     * Get courses where user is an active trainee
-     */
     public function activeCourses()
     {
         return $this->belongsToMany(Course::class, 'course_trainees')
@@ -266,33 +200,21 @@ class User extends Authenticatable implements FilamentUser
             ->withTimestamps();
     }
 
-    /**
-     * Get courses where user is a mentor
-     */
     public function mentorCourses()
     {
         return $this->belongsToMany(Course::class, 'course_mentors');
     }
 
-    /**
-     * Get active rating courses only
-     */
     public function activeRatingCourses()
     {
         return $this->activeCourses()->where('type', 'RTG');
     }
 
-    /**
-     * Get waiting list entries for this user
-     */
     public function waitingListEntries()
     {
         return $this->hasMany(WaitingListEntry::class);
     }
 
-    /**
-     * Get familiarisations for this user
-     */
     public function familiarisations()
     {
         return $this->hasMany(Familiarisation::class);
@@ -300,55 +222,415 @@ class User extends Authenticatable implements FilamentUser
 
     public function canAccessPanel(Panel $panel): bool
     {
-        return $this->is_superuser || $this->is_admin;
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($this->isLeadingMentor()) {
+            return true;
+        }
+
+        return $this->hasPermission('admin.access');
     }
 
-    /**
-     * Get training logs where user is the trainee
-     */
+    public function canAccessAdminResource(string $resource): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($resource === 'courses' && $this->isLeadingMentor()) {
+            return true;
+        }
+
+        $permissionName = "admin.{$resource}.view";
+        return $this->hasPermission($permissionName);
+    }
+
+    public function canEditAdminResource(string $resource): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($resource === 'courses' && $this->isLeadingMentor()) {
+            return true;
+        }
+
+        $permissionName = "admin.{$resource}.edit";
+        return $this->hasPermission($permissionName);
+    }
+
     public function trainingLogs()
     {
         return $this->hasMany(TrainingLog::class, 'trainee_id');
     }
 
-
-    /**
-     * Get examiner profile if user is an examiner
-     */
     public function examiner()
     {
         return $this->hasOne(Examiner::class);
     }
 
-    /**
-     * Check if user is an examiner
-     */
     public function isExaminer(): bool
     {
         return $this->examiner()->exists();
     }
 
-    /**
-     * Get CPTs where user is the trainee
-     */
     public function cpts()
     {
         return $this->hasMany(Cpt::class, 'trainee_id');
     }
 
-    /**
-     * Get CPTs where user is the examiner
-     */
     public function examinedCpts()
     {
         return $this->hasMany(Cpt::class, 'examiner_id');
     }
 
-    /**
-     * Get CPTs where user is the local contact
-     */
     public function localCpts()
     {
         return $this->hasMany(Cpt::class, 'local_id');
+    }
+
+    public function permissions(): BelongsToMany
+    {
+        return $this->belongsToMany(Permission::class, 'user_permissions');
+    }
+
+    public function chiefOfTrainingCourses()
+    {
+        return $this->belongsToMany(Course::class, 'chief_of_trainings');
+    }
+
+    public function leadingMentorFirs()
+    {
+        return $this->hasMany(LeadingMentor::class);
+    }
+
+    private function loadPermissionsOnce(): void
+    {
+        if ($this->permissionCache !== null) {
+            return;
+        }
+
+        if (!$this->relationLoaded('permissions')) {
+            $this->load('permissions');
+        }
+        if (!$this->relationLoaded('roles')) {
+            $this->load('roles.permissions');
+        }
+
+        $this->permissionCache = $this->permissions->pluck('name')->merge(
+            $this->roles->flatMap->permissions->pluck('name')
+        )->unique()->values()->all();
+    }
+
+    public function hasPermission(string $permissionName): bool
+    {
+        $this->loadPermissionsOnce();
+        return in_array($permissionName, $this->permissionCache);
+    }
+
+    public function getChiefOfTrainingCourseIds(): array
+    {
+        if ($this->cotCourseIdsCache === null) {
+            $this->cotCourseIdsCache = \DB::table('chief_of_trainings')
+                ->where('user_id', $this->id)
+                ->pluck('course_id')
+                ->all();
+        }
+        return $this->cotCourseIdsCache;
+    }
+
+    public function getLeadingMentorFirs(): array
+    {
+        if ($this->lmFirsCache === null) {
+            if (!$this->relationLoaded('leadingMentorFirs')) {
+                $this->load('leadingMentorFirs');
+            }
+            $this->lmFirsCache = $this->leadingMentorFirs->pluck('fir')->all();
+        }
+        return $this->lmFirsCache;
+    }
+
+    public function isChiefOfTrainingForCourse(int $courseId): bool
+    {
+        return in_array($courseId, $this->getChiefOfTrainingCourseIds());
+    }
+
+    public function isLeadingMentorForFir(string $fir): bool
+    {
+        return in_array($fir, $this->getLeadingMentorFirs());
+    }
+
+    private function findCourseByPosition(string $position): ?Course
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $airportIcao = $parts[0];
+
+        if (count($parts) > 2 && $parts[1] === 'GNDDEL') {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->first();
+    }
+    
+    public function canRemoveEndorsementForPosition(string $position): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        $allRelatedCourses = $this->getAllCoursesForPosition($position);
+
+        if ($allRelatedCourses->isEmpty()) {
+
+            $lmFirs = $this->getLeadingMentorFirs();
+            if (!empty($lmFirs)) {
+                $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                return $result;
+            }
+            return false;
+        }
+
+        // Check CoT/LM for each course
+        foreach ($allRelatedCourses as $course) {
+            $isCoT = $this->isChiefOfTrainingForCourse($course->id);
+            $canManage = $this->canManageEndorsementsFor($course);
+
+            if ($isCoT) {
+                return true;
+            }
+
+            if ($canManage) {
+                return true;
+            }
+        }
+
+        $hasAnyCoT = \DB::table('chief_of_trainings')
+            ->whereIn('course_id', $allRelatedCourses->pluck('id'))
+            ->exists();
+
+        if (!$hasAnyCoT) {
+            $isMentorForAnyCourse = $allRelatedCourses->contains(function ($course) {
+                $isMentor = $this->mentorCourses()->where('courses.id', $course->id)->exists();
+
+                return $isMentor;
+            });
+
+            if ($isMentorForAnyCourse) {
+                return true;
+            }
+        }
+        $lmFirs = $this->getLeadingMentorFirs();
+        if (!empty($lmFirs)) {
+            $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+            return $result;
+        }
+
+        return false;
+    }
+
+    private function endorsementMatchesLeadingMentorFir(string $position, array $lmFirs): bool
+    {
+        $positionUpper = strtoupper($position);
+
+        foreach ($lmFirs as $fir) {
+            $firUpper = strtoupper($fir);
+
+            if (str_contains($positionUpper, $firUpper)) {
+                return true;
+            }
+
+            $firNameMap = [
+                'EDWW' => ['BREMEN', 'EDWW'],
+                'EDGG' => ['LANGEN', 'EDGG'],
+                'EDMM' => ['MÜNCHEN', 'MUNICH', 'EDMM'],
+            ];
+
+            if (isset($firNameMap[$firUpper])) {
+                foreach ($firNameMap[$firUpper] as $keyword) {
+                    if (str_contains($positionUpper, $keyword)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    public function getFirFromMentorGroup(?string $groupName): ?string
+    {
+        if (!$groupName) {
+            return null;
+        }
+
+        if (str_contains($groupName, 'EDGG'))
+            return 'EDGG';
+        if (str_contains($groupName, 'EDMM'))
+            return 'EDMM';
+        if (str_contains($groupName, 'EDWW'))
+            return 'EDWW';
+
+        return null;
+    }
+
+    public function getAccessibleCourseIds(): array
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return Course::pluck('id')->toArray();
+        }
+
+        $courseIds = [];
+
+        $mentorCourseIds = \DB::table('course_mentors')
+            ->where('user_id', $this->id)
+            ->pluck('course_id')
+            ->toArray();
+        $courseIds = array_merge($courseIds, $mentorCourseIds);
+
+        $cotCourseIds = $this->getChiefOfTrainingCourseIds();
+        $courseIds = array_merge($courseIds, $cotCourseIds);
+
+        $lmFirs = $this->getLeadingMentorFirs();
+
+        if (!empty($lmFirs)) {
+            $lmCourseIds = \DB::table('courses')
+                ->join('roles', 'courses.mentor_group_id', '=', 'roles.id')
+                ->where(function ($query) use ($lmFirs) {
+                    foreach ($lmFirs as $fir) {
+                        $query->orWhere('roles.name', 'LIKE', "%{$fir}%");
+                    }
+                })
+                ->pluck('courses.id')
+                ->toArray();
+            $courseIds = array_merge($courseIds, $lmCourseIds);
+        }
+
+        return array_unique($courseIds);
+    }
+
+    public function canViewCourse(Course $course): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($this->isChiefOfTrainingForCourse($course->id)) {
+            return true;
+        }
+
+        if ($course->mentor_group_id) {
+            $mentorGroupName = $course->mentorGroup?->name;
+            if ($mentorGroupName) {
+                $fir = $this->getFirFromMentorGroup($mentorGroupName);
+                if ($fir && $this->isLeadingMentorForFir($fir)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function canEditTrainingLog(TrainingLog $log): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($this->id === $log->mentor_id) {
+            return true;
+        }
+
+        if (!$log->course_id) {
+            return false;
+        }
+
+        if ($this->isChiefOfTrainingForCourse($log->course_id)) {
+            return true;
+        }
+
+        $course = $log->course;
+        if (!$course || !$course->mentor_group_id) {
+            return false;
+        }
+
+        $mentorGroupName = $course->mentorGroup?->name;
+        if (!$mentorGroupName) {
+            return false;
+        }
+
+        $fir = $this->getFirFromMentorGroup($mentorGroupName);
+        if (!$fir) {
+            return false;
+        }
+
+        return $this->isLeadingMentorForFir($fir);
+    }
+
+    public function canManageEndorsementsFor(Course $course): bool
+    {
+        if ($this->is_superuser || $this->is_admin) {
+            return true;
+        }
+
+        if ($this->isChiefOfTrainingForCourse($course->id)) {
+            return true;
+        }
+
+        if (!$course->mentor_group_id) {
+            return false;
+        }
+
+        $mentorGroupName = $course->mentorGroup?->name;
+        if (!$mentorGroupName) {
+            return false;
+        }
+
+        $fir = $this->getFirFromMentorGroup($mentorGroupName);
+        if (!$fir) {
+            return false;
+        }
+
+        return $this->isLeadingMentorForFir($fir);
+    }
+
+    protected function getAllCoursesForPosition(string $position): \Illuminate\Support\Collection
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return collect();
+        }
+
+        $airportIcao = $parts[0];
+
+        if ($parts[1] === 'GNDDEL' || (count($parts) > 2 && in_array('GNDDEL', $parts))) {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->get();
+    }
+
+    public function isChiefOfTraining(): bool
+    {
+        return !empty($this->getChiefOfTrainingCourseIds());
+    }
+
+    public function isLeadingMentor(): bool
+    {
+        return !empty($this->getLeadingMentorFirs());
     }
 }

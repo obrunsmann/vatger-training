@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Traits\LogsActivity;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -9,6 +10,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Course extends Model
 {
+    use LogsActivity;
+
     protected $fillable = [
         'name',
         'trainee_display_name',
@@ -29,6 +32,22 @@ class Course extends Model
         'min_rating' => 'integer',
         'max_rating' => 'integer',
         'moodle_course_ids' => 'array',
+    ];
+
+    protected $loggedAttributes = [
+        'name',
+        'trainee_display_name',
+        'description',
+        'airport_name',
+        'airport_icao',
+        'solo_station',
+        'mentor_group_id',
+        'min_rating',
+        'max_rating',
+        'type',
+        'position',
+        'moodle_course_ids',
+        'familiarisation_sector_id',
     ];
 
     public function setMoodleCourseIdsAttribute($value)

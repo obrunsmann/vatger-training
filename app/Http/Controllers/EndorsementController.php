@@ -86,26 +86,75 @@ class EndorsementController extends Controller
 
         if ($user->is_superuser || $user->is_admin) {
             $allowedPositions = null;
+            $canRemovePositions = null;
         } else {
-            $allowedPositions = $user->mentorCourses
+            $mentorPositions = $user->mentorCourses
                 ->flatMap(function (Course $course) {
                     $airport = $course->airport_icao;
                     $position = $course->position;
 
                     if ($position === 'GND') {
-                        return [
-                            "{$airport}_GNDDEL",
-                        ];
+                        return ["{$airport}_GNDDEL"];
                     }
 
-                    return [
-                        "{$airport}_{$position}",
-                    ];
+                    return ["{$airport}_{$position}"];
                 })
                 ->unique()
                 ->values();
+
+            $cotPositions = $user->chiefOfTrainingCourses
+                ->flatMap(function (Course $course) {
+                    $airport = $course->airport_icao;
+                    $position = $course->position;
+    
+                    if ($position === 'GND') {
+                        return ["{$airport}_GNDDEL"];
+                    }
+    
+                    return ["{$airport}_{$position}"];
+                })
+                ->unique()
+                ->values();
+
+            $lmPositions = collect([]);
+            $lmFirs = $user->leadingMentorFirs()->pluck('fir');
+
+
+            if ($lmFirs->isNotEmpty()) {
+                foreach ($lmFirs as $fir) {
+                    $firCourses = Course::whereHas('mentorGroup', function ($query) use ($fir) {
+                        $query->where('name', 'LIKE', "%{$fir}%");
+                    })->get();
+
+                    $firPositions = $firCourses->flatMap(function (Course $course) {
+                        $airport = $course->airport_icao;
+                        $position = $course->position;
+
+                        if ($position === 'GND') {
+                            return ["{$airport}_GNDDEL"];
+                        }
+
+                        return ["{$airport}_{$position}"];
+                    });
+
+                    $lmPositions = $lmPositions->merge($firPositions);
+                }
+
+                $lmPositions = $lmPositions->unique()->values();
+            }
+
+            $allowedPositions = $mentorPositions
+                ->merge($cotPositions)
+                ->merge($lmPositions)
+                ->unique()
+                ->values();
+
+            $canRemovePositions = $cotPositions
+                ->merge($lmPositions)
+                ->unique()
+                ->values();
         }
-        
+
         $allTier1 = $this->vatEudService->getTier1Endorsements();
 
         $endorsementIds = collect($allTier1)->pluck('id')->toArray();
@@ -119,19 +168,18 @@ class EndorsementController extends Controller
             ->get()
             ->keyBy('vatsim_id');
 
+        $lmFirs = $user->is_superuser || $user->is_admin ? collect() : $user->leadingMentorFirs()->pluck('fir');
+
         $endorsements = collect($allTier1)
             ->map(function ($endorsement) use ($activities, $users) {
-
                 $activity = $activities->get($endorsement['id']);
                 if (!$activity) {
                     return null;
                 }
 
                 $createdAt = Carbon::parse($endorsement['created_at']);
-
                 $olderThanSixMonths = $createdAt->lte(now()->subMonths(6));
                 $hasGoodActivity = $activity->activity_hours >= 3;
-
                 $shouldBeVisible = $hasGoodActivity || $olderThanSixMonths;
 
                 if (!$shouldBeVisible) {
@@ -159,11 +207,27 @@ class EndorsementController extends Controller
                 ];
             })
             ->filter()
-            ->filter(function ($endorsement) use ($allowedPositions, $user) {
+            ->filter(function ($endorsement) use ($allowedPositions, $user, $lmFirs) {
                 if ($user->is_superuser || $user->is_admin) {
                     return true;
                 }
-                return $allowedPositions->contains($endorsement['position']);
+
+                if ($allowedPositions === null || $allowedPositions->isEmpty()) {
+                    if ($lmFirs->isNotEmpty()) {
+                        return $this->endorsementMatchesLeadingMentorFir($endorsement['position'], $lmFirs);
+                    }
+                    return false;
+                }
+
+                if ($allowedPositions->contains($endorsement['position'])) {
+                    return true;
+                }
+
+                if ($lmFirs->isNotEmpty()) {
+                    return $this->endorsementMatchesLeadingMentorFir($endorsement['position'], $lmFirs);
+                }
+
+                return false;
             })
             ->values();
 
@@ -180,9 +244,138 @@ class EndorsementController extends Controller
             })
             ->values();
 
+        $canRemovePositions = null;
+        if (!($user->is_superuser || $user->is_admin)) {
+            $canRemovePositions = $endorsements
+                ->pluck('position')
+                ->unique()
+                ->filter(function ($position) use ($user, $lmFirs) {
+                    $allCourses = $this->getAllCoursesForPosition($position);
+
+                    if ($allCourses->isEmpty()) {
+                        if ($lmFirs->isNotEmpty()) {
+                            $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                            return $result;
+                        }
+                        return false;
+                    }
+
+                    $isCoTOrLM = false;
+                    foreach ($allCourses as $course) {
+                        $canManage = $user->canManageEndorsementsFor($course);
+
+                        if ($canManage) {
+                            $isCoTOrLM = true;
+                            break;
+                        }
+                    }
+
+                    if ($isCoTOrLM) {
+                        return true;
+                    }
+
+                    $hasAnyCoT = \DB::table('chief_of_trainings')
+                        ->whereIn('course_id', $allCourses->pluck('id'))
+                        ->exists();
+
+                    if (!$hasAnyCoT) {
+                        $isMentorForAnyCourse = $allCourses->contains(function ($course) use ($user) {
+                            $isMentor = $user->mentorCourses()->where('courses.id', $course->id)->exists();
+
+                            return $isMentor;
+                        });
+
+                        if ($isMentorForAnyCourse) {
+                            return true;
+                        }
+                    }
+
+                    if ($lmFirs->isNotEmpty()) {
+                        $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                        return $result;
+                    }
+
+                    return false;
+                })
+                ->values()
+                ->toArray();
+        }
         return Inertia::render('endorsements/manage', [
             'endorsementGroups' => $endorsementsByPosition,
+            'userPermissions' => [
+                'canRemoveForPositions' => $canRemovePositions,
+                'canRemoveAny' => ($user->is_superuser || $user->is_admin) || (!empty($canRemovePositions) && count($canRemovePositions) > 0),
+            ],
         ]);
+    }
+
+    protected function findCourseByPosition(string $position): ?Course
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $airportIcao = $parts[0];
+
+        if (count($parts) > 2 && $parts[1] === 'GNDDEL') {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->first();
+    }
+
+    protected function getAllCoursesForPosition(string $position): \Illuminate\Support\Collection
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return collect();
+        }
+
+        $airportIcao = $parts[0];
+
+        if ($parts[1] === 'GNDDEL' || (count($parts) > 2 && in_array('GNDDEL', $parts))) {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->get();
+    }
+
+    protected function endorsementMatchesLeadingMentorFir(string $position, $lmFirs): bool
+    {
+        $positionUpper = strtoupper($position);
+
+        foreach ($lmFirs as $fir) {
+            $firUpper = strtoupper($fir);
+
+            if (str_contains($positionUpper, $firUpper)) {
+                return true;
+            }
+
+            $firNameMap = [
+                'EDWW' => ['BREMEN', 'EDWW'],
+                'EDGG' => ['LANGEN', 'EDGG'],
+                'EDMM' => ['MÜNCHEN', 'MUNICH', 'EDMM'],
+            ];
+
+            if (isset($firNameMap[$firUpper])) {
+                foreach ($firNameMap[$firUpper] as $keyword) {
+                    if (str_contains($positionUpper, $keyword)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     public function removeTier1(Request $request, int $endorsementId)
@@ -190,7 +383,9 @@ class EndorsementController extends Controller
         $user = $request->user();
 
         if (!$user->isMentor() && !$user->is_superuser) {
-            return back()->with('error', 'Access denied');
+            return back()->with('flash', [
+                'error' => 'Access denied. Mentor privileges required.'
+            ]);
         }
 
         $endorsement = EndorsementActivity::where('endorsement_id', $endorsementId)->first();
@@ -201,31 +396,42 @@ class EndorsementController extends Controller
                 'user_id' => $user->id,
                 'error' => 'Endorsement not found'
             ]);
-            return back()->with('error', 'Endorsement not found');
-
+            return back()->with('flash', [
+                'error' => 'Endorsement not found in the system.'
+            ]);
         }
 
         if (!$user->is_superuser && !$user->is_admin) {
-            $allowedPositions = $user->mentorCourses
-                ->flatMap(function (Course $course) {
-                    $airport = $course->airport_icao;
-                    $position = $course->position;
+            $hasPermission = false;
 
-                    if ($position === 'GND') {
-                        return ["{$airport}_GNDDEL"];
-                    }
+            if ($user->canRemoveEndorsementForPosition($endorsement->position)) {
+                $hasPermission = true;
+            } else {
+                $lmFirs = $user->leadingMentorFirs()->pluck('fir');
+                if ($lmFirs->isNotEmpty() && $this->endorsementMatchesLeadingMentorFir($endorsement->position, $lmFirs)) {
+                    $hasPermission = true;
+                }
+            }
 
-                    return ["{$airport}_{$position}"];
-                })
-                ->unique();
+            if (!$hasPermission) {
+                Log::warning('Unauthorized endorsement removal attempt', [
+                    'user_id' => $user->id,
+                    'user_name' => $user->name,
+                    'endorsement_id' => $endorsementId,
+                    'position' => $endorsement->position,
+                    'vatsim_id' => $endorsement->vatsim_id
+                ]);
 
-            if (!$allowedPositions->contains($endorsement->position)) {
-                return back()->with('error', 'You do not have permission to manage this endorsement');
+                return back()->with('flash', [
+                    'error' => 'You do not have permission to manage this endorsement. Only Chief of Training or Leading Mentor for this position can remove endorsements.'
+                ]);
             }
         }
 
         if ($endorsement->removal_date) {
-            return back()->with('error', 'Endorsement already marked for removal');
+            return back()->with('flash', [
+                'error' => 'This endorsement is already marked for removal.'
+            ]);
         }
 
         $endorsementCreatedAt = Carbon::parse(
@@ -234,37 +440,62 @@ class EndorsementController extends Controller
         );
 
         if (!$endorsementCreatedAt || $endorsementCreatedAt->gt(now()->subMonths(6))) {
-            return back()->with(
-                'error',
-                'Endorsement must be at least 6 months old before it can be removed'
-            );
+            return back()->with('flash', [
+                'error' => 'Endorsement must be at least 6 months old before it can be removed.'
+            ]);
         }
 
         $minRequiredMinutes = config('services.vateud.min_activity_minutes', 180);
 
         if ($endorsement->activity_minutes >= $minRequiredMinutes) {
-            return back()->with('error', 'Endorsement has sufficient activity and cannot be marked for removal');
+            return back()->with('flash', [
+                'error' => 'Endorsement has sufficient activity and cannot be marked for removal.'
+            ]);
         }
 
-        $endorsement->removal_date = Carbon::now()->addDays(
-            config('services.vateud.removal_warning_days', 31)
-        );
-        $endorsement->removal_notified = false;
-        $endorsement->last_updated = Carbon::createFromTimestamp(1);
-        $endorsement->save();
-
-        $trainee = User::where('vatsim_id', $endorsement->vatsim_id)->first();
-
-        if ($trainee) {
-            ActivityLogger::endorsementRemoved(
-                $endorsement->position,
-                $trainee,
-                $user,
-                'Marked for removal due to low activity'
+        try {
+            $endorsement->removal_date = Carbon::now()->addDays(
+                config('services.vateud.removal_warning_days', 31)
             );
-        }
+            $endorsement->removal_notified = false;
+            $endorsement->last_updated = Carbon::createFromTimestamp(1);
+            $endorsement->save();
 
-        return back()->with('success', "Successfully marked {$endorsement->position} for removal");
+            $trainee = User::where('vatsim_id', $endorsement->vatsim_id)->first();
+
+            if ($trainee) {
+                ActivityLogger::endorsementRemoved(
+                    $endorsement->position,
+                    $trainee,
+                    $user,
+                    'Marked for removal due to low activity'
+                );
+            }
+
+            Log::info('Endorsement marked for removal', [
+                'user_id' => $user->id,
+                'user_name' => $user->name,
+                'endorsement_id' => $endorsementId,
+                'position' => $endorsement->position,
+                'vatsim_id' => $endorsement->vatsim_id,
+                'trainee_name' => $trainee?->name
+            ]);
+
+            return back()->with('flash', [
+                'success' => "Successfully marked {$endorsement->position} for removal"
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to mark endorsement for removal', [
+                'endorsement_id' => $endorsementId,
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return back()->with('flash', [
+                'error' => 'An error occurred while marking the endorsement for removal. Please try again.'
+            ]);
+        }
     }
 
     public function requestTier2(Request $request, int $tier2Id)

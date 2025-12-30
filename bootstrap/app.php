@@ -27,6 +27,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'mentor' => \App\Http\Middleware\EnsureUserIsMentor::class,
             'api.auth' => AuthenticateApi::class,
+            'course.access' => \App\Http\Middleware\CheckCourseAccess::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
