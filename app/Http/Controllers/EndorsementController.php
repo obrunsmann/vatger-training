@@ -250,13 +250,49 @@ class EndorsementController extends Controller
                 ->pluck('position')
                 ->unique()
                 ->filter(function ($position) use ($user, $lmFirs) {
-                    $course = $this->findCourseByPosition($position);
-                    if ($course && $user->canManageEndorsementsFor($course)) {
+                    $allCourses = $this->getAllCoursesForPosition($position);
+
+                    if ($allCourses->isEmpty()) {
+                        if ($lmFirs->isNotEmpty()) {
+                            $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                            return $result;
+                        }
+                        return false;
+                    }
+
+                    $isCoTOrLM = false;
+                    foreach ($allCourses as $course) {
+                        $canManage = $user->canManageEndorsementsFor($course);
+
+                        if ($canManage) {
+                            $isCoTOrLM = true;
+                            break;
+                        }
+                    }
+
+                    if ($isCoTOrLM) {
                         return true;
                     }
 
+                    $hasAnyCoT = \DB::table('chief_of_trainings')
+                        ->whereIn('course_id', $allCourses->pluck('id'))
+                        ->exists();
+
+                    if (!$hasAnyCoT) {
+                        $isMentorForAnyCourse = $allCourses->contains(function ($course) use ($user) {
+                            $isMentor = $user->mentorCourses()->where('courses.id', $course->id)->exists();
+
+                            return $isMentor;
+                        });
+
+                        if ($isMentorForAnyCourse) {
+                            return true;
+                        }
+                    }
+
                     if ($lmFirs->isNotEmpty()) {
-                        return $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                        $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                        return $result;
                     }
 
                     return false;
@@ -264,7 +300,6 @@ class EndorsementController extends Controller
                 ->values()
                 ->toArray();
         }
-
         return Inertia::render('endorsements/manage', [
             'endorsementGroups' => $endorsementsByPosition,
             'userPermissions' => [
@@ -292,6 +327,26 @@ class EndorsementController extends Controller
         return Course::where('airport_icao', $airportIcao)
             ->where('position', $positionType)
             ->first();
+    }
+
+    protected function getAllCoursesForPosition(string $position): \Illuminate\Support\Collection
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return collect();
+        }
+
+        $airportIcao = $parts[0];
+
+        if ($parts[1] === 'GNDDEL' || (count($parts) > 2 && in_array('GNDDEL', $parts))) {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->get();
     }
 
     protected function endorsementMatchesLeadingMentorFir(string $position, $lmFirs): bool

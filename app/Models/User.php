@@ -381,50 +381,58 @@ class User extends Authenticatable implements FilamentUser
             ->where('position', $positionType)
             ->first();
     }
-
+    
     public function canRemoveEndorsementForPosition(string $position): bool
     {
         if ($this->is_superuser || $this->is_admin) {
             return true;
         }
 
-        // First, check if there's a course for this position and if user is CoT or LM for it
-        $course = $this->findCourseByPosition($position);
-        if ($course) {
-            // Check if user is Chief of Training for this course
-            if ($this->isChiefOfTrainingForCourse($course->id)) {
+        $allRelatedCourses = $this->getAllCoursesForPosition($position);
+
+        if ($allRelatedCourses->isEmpty()) {
+
+            $lmFirs = $this->getLeadingMentorFirs();
+            if (!empty($lmFirs)) {
+                $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+                return $result;
+            }
+            return false;
+        }
+
+        // Check CoT/LM for each course
+        foreach ($allRelatedCourses as $course) {
+            $isCoT = $this->isChiefOfTrainingForCourse($course->id);
+            $canManage = $this->canManageEndorsementsFor($course);
+
+            if ($isCoT) {
                 return true;
             }
 
-            // Check if user can manage endorsements for this course (includes LM check)
-            if ($this->canManageEndorsementsFor($course)) {
+            if ($canManage) {
                 return true;
             }
         }
 
-        // Check if user is a regular mentor for courses that match this position
-        $allowedPositions = $this->mentorCourses
-            ->flatMap(function (Course $course) {
-                $airport = $course->airport_icao;
-                $position = $course->position;
+        $hasAnyCoT = \DB::table('chief_of_trainings')
+            ->whereIn('course_id', $allRelatedCourses->pluck('id'))
+            ->exists();
 
-                if ($position === 'GND') {
-                    return ["{$airport}_GNDDEL"];
-                }
+        if (!$hasAnyCoT) {
+            $isMentorForAnyCourse = $allRelatedCourses->contains(function ($course) {
+                $isMentor = $this->mentorCourses()->where('courses.id', $course->id)->exists();
 
-                return ["{$airport}_{$position}"];
-            })
-            ->unique()
-            ->values();
+                return $isMentor;
+            });
 
-        if ($allowedPositions->contains($position)) {
-            return false; // Regular mentors cannot remove endorsements
+            if ($isMentorForAnyCourse) {
+                return true;
+            }
         }
-
-        // Finally, check if Leading Mentor FIR matching applies (for positions without courses)
         $lmFirs = $this->getLeadingMentorFirs();
         if (!empty($lmFirs)) {
-            return $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+            $result = $this->endorsementMatchesLeadingMentorFir($position, $lmFirs);
+            return $result;
         }
 
         return false;
@@ -594,6 +602,26 @@ class User extends Authenticatable implements FilamentUser
         }
 
         return $this->isLeadingMentorForFir($fir);
+    }
+
+    protected function getAllCoursesForPosition(string $position): \Illuminate\Support\Collection
+    {
+        $parts = explode('_', $position);
+        if (count($parts) < 2) {
+            return collect();
+        }
+
+        $airportIcao = $parts[0];
+
+        if ($parts[1] === 'GNDDEL' || (count($parts) > 2 && in_array('GNDDEL', $parts))) {
+            $positionType = 'GND';
+        } else {
+            $positionType = $parts[1];
+        }
+
+        return Course::where('airport_icao', $airportIcao)
+            ->where('position', $positionType)
+            ->get();
     }
 
     public function isChiefOfTraining(): bool
