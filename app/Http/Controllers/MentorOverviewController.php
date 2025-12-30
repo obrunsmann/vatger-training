@@ -142,13 +142,14 @@ class MentorOverviewController extends Controller
 
         $claimedTrainees = \DB::table('course_trainees')
             ->whereIn('course_id', $accessibleCourseIds)
-            ->whereNotNull('claimed_by_mentor_id')
+            ->where('claimed_by_mentor_id', $user->id)
             ->whereNull('completed_at')
             ->count();
 
         $trainingSessions = \DB::table('training_logs')
             ->whereIn('course_id', $accessibleCourseIds)
-            ->where('created_at', '>=', now()->subDays(30))
+            ->where('mentor_id', $user->id)
+            ->where('session_date', '>=', now()->subDays(30))
             ->count();
 
         $waitingListCount = \DB::table('waiting_list_entries')

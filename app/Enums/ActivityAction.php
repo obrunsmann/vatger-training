@@ -45,6 +45,10 @@ enum ActivityAction: string
     case COURSE_UPDATED = 'course.updated';
     case COURSE_DELETED = 'course.deleted';
 
+    case COT_CREATED = 'chiefoftraining.created';
+    case COT_UPDATED = 'chiefoftraining.updated';
+    case COT_DELETED = 'chiefoftraining.deleted';
+
     case CPT_CREATED = 'cpt.created';
     case CPT_EXAMINER_JOINED = 'cpt.examiner_joined';
     case CPT_EXAMINER_LEFT = 'cpt.examiner_left';
@@ -109,6 +113,10 @@ enum ActivityAction: string
             self::COURSE_UPDATED => 'Course Updated',
             self::COURSE_DELETED => 'Course Deleted',
 
+            self::COT_CREATED => 'Chief Of Training Created',
+            self::COT_UPDATED => 'Chief Of Training Updated',
+            self::COT_DELETED => 'Chief Of Training Deleted',
+
             self::CPT_CREATED => 'CPT Created',
             self::CPT_EXAMINER_JOINED => 'CPT Examiner Joined',
             self::CPT_EXAMINER_LEFT => 'CPT Examiner Left',
@@ -147,6 +155,7 @@ enum ActivityAction: string
             self::CPT_CREATED,
             self::CPT_PASSED,
             self::COURSE_CREATED,
+            self::COT_CREATED,
             self::CREATED => 'success',
             
             
@@ -161,6 +170,7 @@ enum ActivityAction: string
             self::ROSTER_REMOVED,
             self::GDPR_DELETION,
             self::COURSE_DELETED,
+            self::COT_DELETED,
             self::DELETED => 'danger',
             
             self::SOLO_EXTENDED,
@@ -169,6 +179,7 @@ enum ActivityAction: string
             self::REMARKS_UPDATED,
             self::COURSE_FINISHED,
             self::COURSE_UPDATED,
+            self::COT_UPDATED,
             self::UPDATED => 'warning',
 
             self::CPT_EXAMINER_JOINED,
