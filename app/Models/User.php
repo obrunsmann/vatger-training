@@ -528,6 +528,10 @@ class User extends Authenticatable implements FilamentUser
             return true;
         }
 
+        if ($this->mentorCourses()->where('courses.id', $course->id)->exists()) {
+            return true;
+        }
+
         if ($course->mentor_group_id) {
             $mentorGroupName = $course->mentorGroup?->name;
             if ($mentorGroupName) {
