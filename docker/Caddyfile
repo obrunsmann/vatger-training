@@ -1,0 +1,30 @@
+{
+    auto_https off
+    admin off
+}
+
+:80 {
+    root * /var/www/html/public
+    
+    encode gzip
+    
+    php_fastcgi localhost:9000 {
+        trusted_proxies private_ranges
+    }
+    
+    file_server
+    
+    try_files {path} /index.php?{query}
+    
+    header {
+        -Server
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        X-XSS-Protection "1; mode=block"
+    }
+    
+    log {
+        output stdout
+        format console
+    }
+}
