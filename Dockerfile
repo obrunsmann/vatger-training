@@ -1,4 +1,3 @@
-# Build stage for frontend assets with PHP
 FROM php:8.4-alpine AS frontend
 
 RUN apk add --no-cache nodejs npm \
@@ -72,14 +71,14 @@ RUN mkdir -p storage/app/public/cpt-templates && \
 
 RUN php artisan storage:link
 
-RUN php artisan vendor:publish --all --ansi
-
 RUN php artisan filament:assets
 
 RUN php artisan config:cache
 
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+
+RUN rm -rf /var/www/html/tests /var/www/html/.git /var/www/html/node_modules
 
 COPY --chown=www-data:www-data docker/Caddyfile /etc/caddy/Caddyfile
 
