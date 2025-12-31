@@ -70,7 +70,16 @@ RUN mkdir -p storage/app/public/cpt-templates && \
         cp -r resources/cpt-templates/* storage/app/public/cpt-templates/ 2>/dev/null || true; \
     fi
 
-RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+RUN php artisan storage:link
+
+RUN php artisan vendor:publish --all --ansi
+
+RUN php artisan filament:assets
+
+RUN php artisan config:cache
+
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
+    chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
 
 COPY --chown=www-data:www-data docker/Caddyfile /etc/caddy/Caddyfile
 
