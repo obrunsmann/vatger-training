@@ -96,7 +96,7 @@ RUN rm -rf \
     /var/www/html/components.json \
     /var/www/html/database/factories
 
-COPY --chown=www-data:www-data docker/Caddyfile /etc/caddy/Caddyfile
+COPY --chown=www-data:www-data Caddyfile /etc/caddy/Caddyfile
 
 RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini && \
     echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini && \
@@ -106,7 +106,7 @@ RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini && \
 
 EXPOSE 80 443
 
-COPY docker/start.sh /start.sh
+COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
