@@ -59,7 +59,7 @@ RUN APP_ENV=production composer install --optimize-autoloader --no-dev --no-scri
 
 COPY --chown=www-data:www-data . .
 
-RUN rm -rf bootstrap/cache/*.php vendor/composer/installed.json \
+RUN rm -rf bootstrap/cache/*.php \
     && composer dump-autoload --optimize --no-dev --classmap-authoritative \
     && php artisan package:discover --ansi \
     && rm -rf /usr/bin/composer
