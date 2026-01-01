@@ -54,14 +54,14 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 COPY composer.json composer.lock ./
 
-RUN composer install --optimize-autoloader --no-dev --no-scripts --classmap-authoritative
+RUN APP_ENV=production composer install --optimize-autoloader --no-dev --no-scripts --classmap-authoritative
 
 COPY --chown=www-data:www-data . .
 
-RUN composer dump-autoload --optimize --no-dev --classmap-authoritative \
+RUN rm -rf bootstrap/cache/*.php vendor/composer/installed.json \
+    && composer dump-autoload --optimize --no-dev --classmap-authoritative \
+    && php artisan package:discover --ansi \
     && rm -rf /usr/bin/composer
-
-RUN rm -f bootstrap/cache/*.php
 
 COPY --from=frontend /app/public/build ./public/build
 
@@ -73,12 +73,6 @@ RUN mkdir -p storage/app/public/cpt-templates && \
 RUN php artisan storage:link
 
 RUN php artisan filament:assets
-
-RUN rm -rf bootstrap/cache/config.php \
-    bootstrap/cache/routes-*.php \
-    bootstrap/cache/packages.php \
-    bootstrap/cache/services.php && \
-    APP_ENV=production php artisan config:cache
 
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
