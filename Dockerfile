@@ -60,8 +60,8 @@ RUN APP_ENV=production composer install --optimize-autoloader --no-dev --no-scri
 COPY --chown=www-data:www-data . .
 
 RUN rm -rf bootstrap/cache/*.php \
+    storage/framework/cache/data/* \
     && composer dump-autoload --optimize --no-dev --classmap-authoritative \
-    && php artisan package:discover --ansi \
     && rm -rf /usr/bin/composer
 
 COPY --from=frontend /app/public/build ./public/build
@@ -96,7 +96,7 @@ RUN rm -rf \
     /var/www/html/components.json \
     /var/www/html/database/factories
 
-COPY --chown=www-data:www-data Caddyfile /etc/caddy/Caddyfile
+COPY --chown=www-data:www-data docker/Caddyfile /etc/caddy/Caddyfile
 
 RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini && \
     echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini && \
@@ -106,7 +106,7 @@ RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini && \
 
 EXPOSE 80 443
 
-COPY start.sh /start.sh
+COPY docker/start.sh /start.sh
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
