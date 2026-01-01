@@ -48,15 +48,17 @@ RUN apk add --no-cache --virtual .build-deps \
 
 WORKDIR /var/www/html
 
+ENV APP_ENV=production
+
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 COPY composer.json composer.lock ./
 
-RUN composer install --optimize-autoloader --no-dev --no-scripts
+RUN composer install --optimize-autoloader --no-dev --no-scripts --classmap-authoritative
 
 COPY --chown=www-data:www-data . .
 
-RUN composer dump-autoload --optimize --no-dev \
+RUN composer dump-autoload --optimize --no-dev --classmap-authoritative \
     && rm -rf /usr/bin/composer
 
 RUN rm -f bootstrap/cache/*.php
@@ -72,7 +74,11 @@ RUN php artisan storage:link
 
 RUN php artisan filament:assets
 
-RUN php artisan config:cache
+RUN php artisan cache:clear && \
+    php artisan config:clear && \
+    php artisan route:clear && \
+    php artisan view:clear && \
+    APP_ENV=production php artisan config:cache
 
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
