@@ -3,6 +3,7 @@ FROM php:8.4-alpine AS frontend
 RUN apk add --no-cache \
     nodejs \
     npm \
+    git \
     icu-dev \
     libzip-dev \
     $PHPIZE_DEPS
