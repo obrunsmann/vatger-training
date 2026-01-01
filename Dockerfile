@@ -74,10 +74,10 @@ RUN php artisan storage:link
 
 RUN php artisan filament:assets
 
-RUN php artisan cache:clear && \
-    php artisan config:clear && \
-    php artisan route:clear && \
-    php artisan view:clear && \
+RUN rm -rf bootstrap/cache/config.php \
+    bootstrap/cache/routes-*.php \
+    bootstrap/cache/packages.php \
+    bootstrap/cache/services.php && \
     APP_ENV=production php artisan config:cache
 
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
