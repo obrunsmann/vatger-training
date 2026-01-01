@@ -24,9 +24,11 @@ RUN composer dump-autoload --optimize --no-dev
 RUN rm -f bootstrap/cache/*.php
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci
 
 RUN npm run build
+
+RUN rm -rf node_modules
 
 FROM php:8.4-fpm-alpine
 
