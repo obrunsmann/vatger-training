@@ -4,9 +4,10 @@ RUN apk add --no-cache \
     nodejs \
     npm \
     icu-dev \
+    libzip-dev \
     $PHPIZE_DEPS
 
-RUN docker-php-ext-install intl
+RUN docker-php-ext-install intl zip
 
 WORKDIR /app
 
@@ -31,12 +32,14 @@ FROM php:8.4-fpm-alpine
 
 RUN apk add --no-cache \
     icu-libs \
+    libzip \
     caddy
 
 RUN apk add --no-cache --virtual .build-deps \
     $PHPIZE_DEPS \
     icu-dev \
-    && docker-php-ext-install intl pdo_mysql opcache \
+    libzip-dev \
+    && docker-php-ext-install intl zip pdo_mysql opcache \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && apk del .build-deps
