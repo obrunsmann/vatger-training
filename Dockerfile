@@ -1,19 +1,16 @@
 FROM php:8.4-alpine AS frontend
 
-RUN apk add --no-cache nodejs npm \
+RUN apk add --no-cache \
+    nodejs \
+    npm \
     icu-dev \
-    libzip-dev \
-    zip \
-    curl \
-    git
+    $PHPIZE_DEPS
 
-RUN docker-php-ext-install intl zip
+RUN docker-php-ext-install intl
 
 WORKDIR /app
 
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && chmod +x /usr/local/bin/composer \
-    && composer --version
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 COPY composer.json composer.lock ./
 
@@ -25,40 +22,37 @@ RUN composer dump-autoload --optimize --no-dev
 
 RUN rm -f bootstrap/cache/*.php
 
-RUN npm ci
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 
 RUN npm run build
 
-# Production stage with Caddy
 FROM php:8.4-fpm-alpine
 
 RUN apk add --no-cache \
-    libzip-dev \
-    zip \
-    postgresql-dev \
-    icu-dev \
-    curl \
-    git \
-    caddy \
-    && docker-php-ext-install intl zip pdo_mysql pdo_pgsql
+    icu-libs \
+    caddy
 
-RUN apk add --no-cache --virtual .build-deps $PHPIZE_DEPS \
+RUN apk add --no-cache --virtual .build-deps \
+    $PHPIZE_DEPS \
+    icu-dev \
+    && docker-php-ext-install intl pdo_mysql opcache \
     && pecl install redis \
     && docker-php-ext-enable redis \
     && apk del .build-deps
 
 WORKDIR /var/www/html
 
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && chmod +x /usr/local/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 COPY composer.json composer.lock ./
 
 RUN composer install --optimize-autoloader --no-dev --no-scripts
 
-COPY . .
+COPY --chown=www-data:www-data . .
 
-RUN composer dump-autoload --optimize --no-dev
+RUN composer dump-autoload --optimize --no-dev \
+    && rm -rf /usr/bin/composer
 
 RUN rm -f bootstrap/cache/*.php
 
@@ -78,13 +72,35 @@ RUN php artisan config:cache
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && \
     chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
 
-RUN rm -rf /var/www/html/tests /var/www/html/.git /var/www/html/node_modules
+RUN rm -rf \
+    /var/www/html/tests \
+    /var/www/html/.git \
+    /var/www/html/node_modules \
+    /var/www/html/resources/js \
+    /var/www/html/resources/css \
+    /var/www/html/package.json \
+    /var/www/html/package-lock.json \
+    /var/www/html/vite.config.ts \
+    /var/www/html/tsconfig.json \
+    /var/www/html/tailwind.config.js \
+    /var/www/html/phpunit.xml \
+    /var/www/html/.phpunit.result.cache \
+    /var/www/html/eslint.config.js \
+    /var/www/html/prettier.config.js \
+    /var/www/html/components.json \
+    /var/www/html/database/factories
 
-COPY --chown=www-data:www-data docker/Caddyfile /etc/caddy/Caddyfile
+COPY --chown=www-data:www-data Caddyfile /etc/caddy/Caddyfile
+
+RUN echo "opcache.enable=1" >> /usr/local/etc/php/conf.d/opcache.ini && \
+    echo "opcache.memory_consumption=128" >> /usr/local/etc/php/conf.d/opcache.ini && \
+    echo "opcache.interned_strings_buffer=8" >> /usr/local/etc/php/conf.d/opcache.ini && \
+    echo "opcache.max_accelerated_files=10000" >> /usr/local/etc/php/conf.d/opcache.ini && \
+    echo "opcache.validate_timestamps=0" >> /usr/local/etc/php/conf.d/opcache.ini
 
 EXPOSE 80 443
 
-COPY docker/start.sh /start.sh
+COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
