@@ -43,8 +43,31 @@ class WaitingListController extends Controller
             ->groupBy('courses.id', 'courses.name', 'courses.type', 'courses.position');
 
         if (!$user->is_superuser && !$user->is_admin) {
-            $query->join('course_mentors', 'courses.id', '=', 'course_mentors.course_id')
-                ->where('course_mentors.user_id', $user->id);
+            $lmFirs = $user->getLeadingMentorFirs();
+
+            if (!empty($lmFirs)) {
+                $query->where(function ($q) use ($user, $lmFirs) {
+                    $q->whereExists(function ($subQuery) use ($user) {
+                        $subQuery->select(DB::raw(1))
+                            ->from('course_mentors')
+                            ->whereRaw('course_mentors.course_id = courses.id')
+                            ->where('course_mentors.user_id', $user->id);
+                    })
+                        ->orWhereExists(function ($subQuery) use ($lmFirs) {
+                            $subQuery->select(DB::raw(1))
+                                ->from('roles')
+                                ->whereRaw('courses.mentor_group_id = roles.id')
+                                ->where(function ($firQuery) use ($lmFirs) {
+                                    foreach ($lmFirs as $fir) {
+                                        $firQuery->orWhere('roles.name', 'LIKE', "%{$fir}%");
+                                    }
+                                });
+                        });
+                });
+            } else {
+                $query->join('course_mentors', 'courses.id', '=', 'course_mentors.course_id')
+                    ->where('course_mentors.user_id', $user->id);
+            }
         }
 
         $courses = $query->get();
@@ -142,7 +165,23 @@ class WaitingListController extends Controller
                 ->exists();
 
             if (!$isMentorForCourse) {
-                return response()->json(['error' => 'You cannot mentor this course'], 403);
+                $course = Course::find($entry->course_id);
+                if ($course && $course->mentor_group_id) {
+                    $mentorGroupName = DB::table('roles')
+                        ->where('id', $course->mentor_group_id)
+                        ->value('name');
+
+                    if ($mentorGroupName) {
+                        $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                        if (!$fir || !$user->isLeadingMentorForFir($fir)) {
+                            return response()->json(['error' => 'You cannot mentor this course'], 403);
+                        }
+                    } else {
+                        return response()->json(['error' => 'You cannot mentor this course'], 403);
+                    }
+                } else {
+                    return response()->json(['error' => 'You cannot mentor this course'], 403);
+                }
             }
         }
 
@@ -191,7 +230,23 @@ class WaitingListController extends Controller
                 ->exists();
 
             if (!$isMentorForCourse) {
-                return back()->withErrors(['error' => 'You cannot modify this entry']);
+                $course = Course::find($entry->course_id);
+                if ($course && $course->mentor_group_id) {
+                    $mentorGroupName = DB::table('roles')
+                        ->where('id', $course->mentor_group_id)
+                        ->value('name');
+
+                    if ($mentorGroupName) {
+                        $fir = $user->getFirFromMentorGroup($mentorGroupName);
+                        if (!$fir || !$user->isLeadingMentorForFir($fir)) {
+                            return back()->withErrors(['error' => 'You cannot modify this entry']);
+                        }
+                    } else {
+                        return back()->withErrors(['error' => 'You cannot modify this entry']);
+                    }
+                } else {
+                    return back()->withErrors(['error' => 'You cannot modify this entry']);
+                }
             }
         }
 
