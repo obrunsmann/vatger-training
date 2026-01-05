@@ -109,7 +109,7 @@ class CptController extends Controller
         $notifyUsers = $notifyUsers->unique('id');
 
         $roleText = $role === 'examiner' ? 'examiner' : 'local contact';
-        $message = "{$unassignedUser->full_name} has unassigned themselves as {$roleText} from the CPT for {$cpt->trainee->full_name} at {$cpt->course->solo_station} on {$cpt->date->format('d.m.Y at H:i')}lcl.";
+        $message = "{$unassignedUser->full_name} has unassigned themselves as {$roleText} from the CPT for {$cpt->trainee->full_name} at {$cpt->course->solo_station} on {$cpt->date->format('d.m.Y')} at {$cpt->date->format('H:i')}lcl";
 
         foreach ($notifyUsers as $user) {
             if ($user->vatsim_id) {
