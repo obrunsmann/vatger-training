@@ -39,10 +39,15 @@ trait LogsActivity
         $old = $action === 'updated' ? $this->getOriginal() : [];
         $new = $action !== 'deleted' ? $this->getAttributes() : [];
 
-        if (property_exists($this, 'loggedAttributes') && $action === 'updated') {
-            $old = array_intersect_key($old, array_flip($this->loggedAttributes));
-            $new = array_intersect_key($new, array_flip($this->loggedAttributes));
+        if ($action === 'updated') {
+            $attributesToLog = property_exists($this, 'loggedAttributes') && is_array($this->loggedAttributes)
+                ? $this->loggedAttributes
+                : array_keys($this->getAttributes());
 
+            $old = array_intersect_key($old, array_flip($attributesToLog));
+            $new = array_intersect_key($new, array_flip($attributesToLog));
+
+            // Nothing changed? Skip logging
             if (empty(array_diff_assoc($new, $old))) {
                 return;
             }
@@ -56,6 +61,7 @@ trait LogsActivity
             $new
         );
     }
+
 
     protected function shouldLogActivity(string $action): bool
     {
