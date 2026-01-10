@@ -128,9 +128,6 @@ class RemoveEndorsements extends Command
                     continue;
                 }
 
-                $traineeId = $endorsement->trainee_id;
-                $traineeName = $endorsement->trainee->name;
-
                 $success = $this->vatEudService->removeTier1Endorsement($endorsement->endorsement_id);
 
                 if ($success) {
