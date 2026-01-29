@@ -12,7 +12,7 @@ class CptController extends Controller
     public function index(): JsonResponse
     {
         try {
-            $cpts = Cpt::with(['trainee', 'examiner', 'local', 'course'])
+            $cpts = Cpt::with(['trainee', 'course'])
                 ->where('date', '>', now())
                 ->whereNull('passed')
                 ->orderBy('date')
