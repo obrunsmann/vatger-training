@@ -697,7 +697,7 @@ class EndorsementController extends Controller
             'EDDB_GNDDEL' => 'Berlin Ground/Delivery',
             'EDWW_CTR' => 'Bremen Big',
             'EDWW_W_CTR' => 'Bremen West',
-            'EDGG_KTG_CTR' => 'Kitzingen (KTG)',
+            'EDGG_CSH_CTR' => 'Central South (High)',
             'EDXX_AFIS' => 'AFIS Tower',
         ];
 
